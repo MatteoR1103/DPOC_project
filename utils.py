@@ -42,7 +42,7 @@ def spawn_probability_vec(C: Const, s) -> float:
     Returns:
         np.ndarray(K,) float: The spawn probabilities p_spawn(s).
     """
-    return max(min((s - C.D_min + 1) / (C.X - C.D_min), 1.0), 0.0)
+    return np.clip(((s - C.D_min + 1) / (C.X - C.D_min)), 0,0, 1.0)
 
 def is_in_gap(C: Const, y: int, h1: int) -> bool:
     """Returns true if bird in gap.
@@ -99,7 +99,7 @@ def compute_height_dynamics(y_k, v_k, C: Const):
         np.ndarray: Array of shape (K,) containing next-state altitudes,
                     clipped to remain within [0, C.Y - 1].
     """
-    return min(max(y_k + v_k, 0), C.Y -1)
+    return np.clip((y_k + v_k), 0, C.Y -1)
 
 def compute_vel_dynamics(v_k, input_space, v_dev_inter, C: Const):
     """
@@ -224,18 +224,14 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
 
     #create an array to contain the possible heights in case of spawn 
     w_k_h = np.array(C.S_h)
-    # create a 3d array containing all possible new heights depending on the distribution of w_k_h
-    h_next_spawn = np.empty((C.K, C.M ,len(C.S_h)))   
-    
-    h_next_spawn[np.arange(C.K), mmin, :] = w_k_h #every row gets filled with the possible heights for each mmin 
-
     #stack next distances into a single array of dimensions (K,M,2)
     d_next = np.stack((d_next_no_spawn, d_next_spawn), axis = 2)
 
     #create result array indexed by state, number of obstacles, possible spawn heights, spawn/no_spawn cases
     h_next = np.empty((C.K, C.M, len(C.S_h), 2))
-    h_next[:,:,:,0] = h_next_no_spawn[:,:, None]
-    h_next[:,:,:,1] = h_next_spawn
+    h_next[:, :, :, 0] = h_next_no_spawn[:, :, None]
+    h_next[:, :, :, 1] = h_next_no_spawn[:, :, None]
+    h_next[np.arange(C.K), mmin, :, 1] = w_k_h      #every row gets filled with the possible heights for each mmin 
 
     return d_next, h_next
 
