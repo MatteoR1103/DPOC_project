@@ -32,6 +32,18 @@ def spawn_probability(C: Const, s: int) -> float:
     """
     return max(min((s - C.D_min + 1) / (C.X - C.D_min), 1.0), 0.0)
 
+def spawn_probability_vec(C: Const, s) -> float:
+    """Distance-dependent spawn probability p_spawn(s).
+    
+    Args:
+        C (Const): The constants describing the problem instance.
+        s np.ndarray (K,): Free distances, as defined in the assignment.
+
+    Returns:
+        np.ndarray(K,) float: The spawn probabilities p_spawn(s).
+    """
+    return max(min((s - C.D_min + 1) / (C.X - C.D_min), 1.0), 0.0)
+
 def is_in_gap(C: Const, y: int, h1: int) -> bool:
     """Returns true if bird in gap.
     
@@ -74,67 +86,160 @@ def is_collision(C: Const, y: int, d1: int, h1: int) -> bool:
     """
     return (d1 == 0) and not is_in_gap(C, y, h1)
 
-
-def compute_pose_dynamics(y_k, v_k, u_k, C: Const):
-    """ Computes next state velocities and height
-    Args:
-        y_k : current height
-        v_k : current velocity
-    Returns:
-        tuple(y_k1 (int), v_k1): next state height and all possible velocities
+def compute_height_dynamics(y_k, v_k, C: Const): 
     """
+    Compute the next-state altitudes (y_{k+1}) deterministically.
+
+    Args:
+        y_k (np.ndarray): Array of shape (K,) containing current altitudes.
+        v_k (np.ndarray): Array of shape (K,) containing current vertical velocities.
+        C (Const): Problem constants 
+
+    Returns:
+        np.ndarray: Array of shape (K,) containing next-state altitudes,
+                    clipped to remain within [0, C.Y - 1].
+    """
+    return min(max(y_k + v_k, 0), C.Y -1)
+
+def compute_vel_dynamics(v_k, input_space, v_dev_inter, C: Const):
+    """
+    Compute the next-state velocity array indexed by state, input, and flap disturbance.
+
+    Args:
+        v_k (np.ndarray): Array of shape (K,) containing current velocities.
+        input_space (np.ndarray): Array of shape (L,) with discrete input values
+                                  [U_no_flap, U_weak, U_strong].
+        v_dev_inter (np.ndarray): Array of shape (2 * C.V_dev + 1,)
+                                  containing the sampled flap disturbances.
+        C (Const): Problem constants (fields: g, V_max, V_dev, etc.).
+
+    Returns:
+        np.ndarray: Array of shape (K, L, 2 * C.V_dev + 1) containing all possible
+                    next velocities for each state, input, and flap disturbance.
+    """
+     
     v_max = C.V_max
     g = C.g
-    v_dev = C.V_dev
-    flap_space_dim = 2*v_dev+1
+    flap_space_dim = v_dev_inter.shape
 
-    y_k1 = min(max(y_k + v_k, 0), C.Y -1)
-    
-    if u_k == C.U_no_flap or u_k == C.U_weak: 
-        w_flap_k = np.zeros(flap_space_dim)
-    else: 
-        #w_k_flap takes different values distributed uniformly around [-V_dev, V_dev]
-        
-        w_flap_k = np.linspace(-v_dev, v_dev, flap_space_dim) #flap_space_dim
+    #The next velocities are deterministic if the input is no_flap or weak: K-dimensional arrays
+    v_next_no_flap = np.clip((v_k + input_space[0] - g), -v_max, v_max)
+    v_next_weak = np.clip((v_k + input_space[1] - g), -v_max, v_max)
 
-    v_k1 = np.min(np.max(v_k + u_k + w_flap_k - g, -v_max), v_max) #flap_space_dim. Each velocity has the same probability of being generated
+    #augment v_k and v_dev_inter for broadcasting: (Kxflap_space_dim)-dimensional arrays
+    # Each velocity has the same probability of being generated
+    v_next_strong = np.clip((v_k[:, None]+ input_space[2] + v_dev_inter[None, :] - g), -v_max, v_max) 
 
-    return y_k1, v_k1
+    next_v = np.empty((C.K, C.L, flap_space_dim))
+    next_v[:, 0, :] = v_next_no_flap[:, None]
+    next_v[:, 1, :] = v_next_weak[:, None]
+    next_v[:, 2, :] = v_next_strong
 
+    return next_v
 
 def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
-    """ Computes obstacle dynamics: new obstacle distances and heights based on transition and spawn disturbance
-        Args:
-            d_k : list obstacle distances
-            h_k : list obstacle heights
-            C   : constants 
-        Returns:
-            tuple(d_k1, h_k1) new obstacle poses
     """
+        Compute obstacle dynamics (new distances and heights) based on current state and spawn disturbances.
+
+        Args:
+            d_k (np.ndarray): Array of shape (K, M) containing all obstacles' distances.
+            h_k (np.ndarray): Array of shape (K, M) containing all obstacles' heights.
+            y_k (np.ndarray): Array of shape (K,) containing all bird altitudes.
+            C (Const): Constant parameters 
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]:
+                - d_next: np.ndarray of shape (K, M, 2)
+                Updated obstacle distances for no-spawn and spawn cases.
+                - h_next: np.ndarray of shape (K, M, len(C.S_h), 2)
+                Updated obstacle heights for all possible spawn heights and spawn/no-spawn cases.
+    """
+    
     #compute intermediate dynamics first, then factor in spawn disturbances
     #only used for valid states, otherwise probability is already computed as 0 
 
     #Intermediate variables. considering that collision states are already considered elsewhere
+    half = (C.G - 1) // 2 
+    h_d = C.S_h[0]
 
-    d_int = []
+    in_gap = abs(y_k - h_k[:,0]) <= half
+    in_col_1 = d_k[:,0] == 0   #mask selcting where we have an obst in 1st column
 
-    if is_passing(C, y=y_k, d1=d_k[0], h1=h_k[0]):
-        for i in range(len(d_k)): 
-            if i == 0:
-                d_int.append(d_k[i+1]-1)    #the distance to the first becomes the distance from first to second -1
-            elif i == C.M :                 
-                d_int.append(0)             #dummy value waiting for spawn disturbance for the next dynamics
-            else: 
-                d_int.append(d_k[i+1])      #shift indices 
-    else:                                   #considering we are already ruling out is_collision states normal drifting
-        for i in range(len(d_k)): 
-            if i == 0:
-                d_int.append(d_k[i]-1)      #the distance to the first becomes the distance from first to second -1
-            else: 
-                d_int.append(d_k[i+1])
+    is_passing_mask = in_gap & in_col_1 #(K,) array of booleans indicating whether it's passing or not
+    is_drifting_mask = np.logical_not(is_passing_mask)#(K,) array of booleans indicating whether it's drifting or not
+
+    #compute dynamics for passing scenario
+    passing_obst_d = d_k[is_passing_mask, :] #(is_passing, M) array
+    d_int_passing = np.empty((passing_obst_d.shape))
     
-    #now that we have the intermediate dynamics, We can see how spawning works 
-    s = C.X - 1 - sum(d_int)
-    p_spawn = spawn_probability(C=C, s=s)
+    d_int_passing[:, 0] = passing_obst_d[:, 1] - 1 #the distance to the first becomes the distance from first to second -1
+    d_int_passing[:,1:(C.M-1)] = passing_obst_d[:, 2:] #shift indices 
+    d_int_passing[:, -1] = 0                       #dummy value waiting for spawn disturbance for the next dynamics
+    
+    passing_obst_h = h_k[is_passing_mask, :] #(is_passing, M) array
+    h_int_passing = np.empty((passing_obst_h.shape))
+    
+    h_int_passing[:, 0:(C.M-1)] = passing_obst_h[:, 1:] #shift indices 
+    h_int_passing[:, -1] = h_d                      #dummy value waiting for spawn disturbance for the next dynamics
+
+    #compute dynamics for normal drifting scenario
+    drifting_obst_d = d_k[is_drifting_mask, :]
+    d_int_drifting = np.empty((drifting_obst_d.shape))
+    
+    d_int_drifting[:, 0] = drifting_obst_d[:, 0] - 1 #the distance to the first becomes the distance from first - 1
+    d_int_drifting[:, 1:] = drifting_obst_d[:, 1:]   #others remain unchanged 
+
+    drifting_obst_h = h_k[is_drifting_mask, :]           #(is_passing, M) array
+    h_int_drifting = np.empty((drifting_obst_h.shape))
+    h_int_drifting = drifting_obst_h.copy()              #if drifting obstacles heights remain the same
+
+    #put everything back together into a (K,M) array 
+    d_int = np.empty((C.K, C.M))
+    d_int[is_passing_mask, :] = d_int_passing
+    d_int[is_drifting_mask, :] = d_int_drifting
+    
+    h_int = np.empty((C.K, C.M))
+    h_int[is_passing_mask, :] = h_int_passing
+    h_int[is_drifting_mask, :] = h_int_drifting
+    #now that we have the intermediate dynamics, We can see how spawning works
+    s = C.X - 1 - np.sum(d_int, axis=1)  #(K, )
+
+    # compute next state obstacles. for obstacles' distances it's either the same as the intermediate, or = s if it has spawned
+    # create all possible outcomes, and probability will be taken into account later on in the ComputeTransitionProbabilities
+
+    d_next_no_spawn = d_int
+    h_next_no_spawn = h_int
+
+    mask_mmin = (d_int == 0) #(K,M) mask
+    has_zero = np.any(mask_mmin, axis=1) #finds if the row K has a 0 (consition of the mask = True,1) or not 
+    
+    #we need to pick the first TRUE (what argmax does since true=1) only if has_zero is true, otherwise it's 0 because not found
+    #If not found, set as C.M as in the statement 
+    mmin = np.where(has_zero, np.argmax(mask_mmin, axis=1), C.M-1) #(K,) indices of where the first zero is
+    
+    #we need now to index for all the rows the column in which mmin was found
+    #np.arange(C.K) pairs each mmin with the corresponding row
+    d_int[np.arange(C.K), mmin] = s
+    d_next_spawn = d_int
+
+    #create an array to contain the possible heights in case of spawn 
+    w_k_h = np.array(C.S_h)
+    # create a 3d array containing all possible new heights depending on the distribution of w_k_h
+    h_next_spawn = np.empty((C.K, C.M ,len(C.S_h)))   
+    
+    h_next_spawn[np.arange(C.K), mmin, :] = w_k_h #every row gets filled with the possible heights for each mmin 
+
+    #stack next distances into a single array of dimensions (K,M,2)
+    d_next = np.stack((d_next_no_spawn, d_next_spawn), axis = 2)
+
+    #create result array indexed by state, number of obstacles, possible spawn heights, spawn/no_spawn cases
+    h_next = np.empty((C.K, C.M, len(C.S_h), 2))
+    h_next[:,:,:,0] = h_next_no_spawn[:,:, None]
+    h_next[:,:,:,1] = h_next_spawn
+
+    return d_next, h_next
+
+
+
 
     

@@ -18,6 +18,7 @@ Institute for Dynamic Systems and Control
 import numpy as np
 from Const import Const
 import itertools
+from utils import *
 
 def compute_transition_probabilities(C:Const) -> np.array:
     """Computes the transition probability matrix P.
@@ -51,55 +52,23 @@ def compute_transition_probabilities(C:Const) -> np.array:
     ### POSE DYNAMICS ###
     # C.K is the already filtered state space that satisfies these constraints
     # state_space now contains all the information needed to compute the dynamics and the probability function
+    
+    #height is a deterministic update, so it can be calculated vectorially without the need of for loops
+    y_k = np.array([s[0] for s in state_space]) #(K,)
+    v_k = np.array([s[1] for s in state_space]) #(K,)
 
-    for s in state_space:
-        #unpack state 
-        y_k, v_k, d_values, h_values = s
-        for u_k in input_space:
-            y_k1, v_k1 = compute_pose_dynamics(y_k, v_k, u_k, C)
+    d_k = np.array([s[2 : 2 + C.M] for s in state_space]) #(K,M) 
+    h_k = np.array([s[2 + C.M : ] for s in state_space])  #(K,M)
+    
+    y_k1 = compute_height_dynamics(y_k = y_k, v_k=v_k, C=C) #(K,)
+    
+    v_dev_inter = np.arange(-C.V_dev, C.V_dev + 1)
+    v_k1 = compute_vel_dynamics(v_k, input_space, v_dev_inter, C) #(K, input_space, 2*V_dev +1)
 
-        
+    d_k1, h_k1 = compute_obst_dynamics(d_k, h_k, y_k, C) #tuple((K,M,2), (K, M, len(S_h), 2))
+
     return P
 
-def compute_pose_dynamics(y_k, v_k, u_k, C: Const):
-    """ Computes next state velocities and height
-    Args:
-        y_k : current height
-        v_k : current velocity
-    Returns:
-        tuple(y_k1 (int), v_k1): next state height and all possible velocities
-    """
-    v_max = C.V_max
-    g = C.g
-    v_dev = C.V_dev
-    flap_space_dim = 2*v_dev+1
-
-    y_k1 = min(max(y_k + v_k, 0), C.Y -1)
-    
-    if u_k == C.U_no_flap or u_k == C.U_weak: 
-        w_flap_k = np.zeros(flap_space_dim)
-    else: 
-        #w_k_flap takes different values distributed uniformly around [-V_dev, V_dev]
-        
-        w_flap_k = np.linspace(-v_dev, v_dev, flap_space_dim) #flap_space_dim
-
-    v_k1 = np.min(np.max(v_k + u_k + w_flap_k - g, -v_max), v_max) #flap_space_dim. Each velocity has the same probability of being generated
-
-    return y_k1, v_k1
-
-
-def compute_obst_dynamics(d_k, h_k, C: Const):
-    """ Computes obstacle dynamics: new obstacle distances and heights based on transition and spawn disturbance
-        Args:
-            d_k : first obst distance
-            h_k : first obst height
-            y_k : current height
-            C   : constants 
-        Returns:
-            int: 0 for is_collision, 1 for is_passing or 2 for is_drifting
-    """
-    #compute intermediate dynamics first, then factor in spawn disturbances
-    #only used for valid states, otherwise probability is already computed as 0 
 
     
         
