@@ -148,11 +148,13 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
             C (Const): Constant parameters 
 
         Returns:
-            tuple[np.ndarray, np.ndarray]:
+            tuple[np.ndarray, np.ndarray, np.ndarray]:
                 - d_next: np.ndarray of shape (K, M, 2)
                 Updated obstacle distances for no-spawn and spawn cases.
                 - h_next: np.ndarray of shape (K, M, len(C.S_h), 2)
                 Updated obstacle heights for all possible spawn heights and spawn/no-spawn cases.
+                - p_spawn: np.ndarray of shape (K,)
+                Obstacle spawn probability for each state.
     """
     
     #compute intermediate dynamics first, then factor in spawn disturbances
@@ -204,6 +206,8 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     #now that we have the intermediate dynamics, We can see how spawning works
     s = C.X - 1 - np.sum(d_int, axis=1)  #(K, )
 
+    p_spawn = spawn_probability_vec(C, s)
+
     # compute next state obstacles. for obstacles' distances it's either the same as the intermediate, or = s if it has spawned
     # create all possible outcomes, and probability will be taken into account later on in the ComputeTransitionProbabilities
 
@@ -231,9 +235,9 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     h_next = np.empty((C.K, C.M, len(C.S_h), 2))
     h_next[:, :, :, 0] = h_next_no_spawn[:, :, None]
     h_next[:, :, :, 1] = h_next_no_spawn[:, :, None]
-    h_next[np.arange(C.K), mmin, :, 1] = w_k_h      #every row gets filled with the possible heights for each mmin 
+    h_next[np.arange(C.K), mmin, :, 1] = w_k_h[None, :]      #every row gets filled with the possible heights for each mmin 
 
-    return d_next, h_next
+    return d_next, h_next, p_spawn
 
 
 
