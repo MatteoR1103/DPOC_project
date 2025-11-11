@@ -42,7 +42,7 @@ def spawn_probability_vec(C: Const, s) -> float:
     Returns:
         np.ndarray(K,) float: The spawn probabilities p_spawn(s).
     """
-    return np.clip(((s - C.D_min + 1) / (C.X - C.D_min)), 0,0, 1.0)
+    return np.clip(((s - C.D_min + 1) / (C.X - C.D_min)), 0.0, 1.0)
 
 def is_in_gap(C: Const, y: int, h1: int) -> bool:
     """Returns true if bird in gap.
@@ -99,7 +99,7 @@ def compute_height_dynamics(y_k, v_k, C: Const):
         np.ndarray: Array of shape (K,) containing next-state altitudes,
                     clipped to remain within [0, C.Y - 1].
     """
-    return np.clip((y_k + v_k), 0, C.Y -1)
+    return np.clip((y_k + v_k), 0, C.Y -1).astype(int)
 
 def compute_vel_dynamics(v_k, input_space, v_dev_inter, C: Const):
     """
@@ -120,17 +120,18 @@ def compute_vel_dynamics(v_k, input_space, v_dev_inter, C: Const):
      
     v_max = C.V_max
     g = C.g
-    flap_space_dim = v_dev_inter.shape
-
+    flap_space_dim = v_dev_inter.shape[0]
     #The next velocities are deterministic if the input is no_flap or weak: K-dimensional arrays
-    v_next_no_flap = np.clip((v_k + input_space[0] - g), -v_max, v_max)
-    v_next_weak = np.clip((v_k + input_space[1] - g), -v_max, v_max)
+    v_next_no_flap = np.clip((v_k + input_space[0] - g), -v_max, v_max).astype(int)
+    v_next_weak = np.clip((v_k + input_space[1] - g), -v_max, v_max).astype(int)
 
     #augment v_k and v_dev_inter for broadcasting: (Kxflap_space_dim)-dimensional arrays
     # Each velocity has the same probability of being generated
-    v_next_strong = np.clip((v_k[:, None]+ input_space[2] + v_dev_inter[None, :] - g), -v_max, v_max) 
+    v_next_strong = np.clip((v_k[:, None]+ input_space[2] + v_dev_inter[None, :] - g), -v_max, v_max).astype(int)
 
-    next_v = np.empty((C.K, C.L, flap_space_dim))
+    K_valid = v_k.shape[0]
+
+    next_v = np.empty((K_valid, C.L, flap_space_dim))
     next_v[:, 0, :] = v_next_no_flap[:, None]
     next_v[:, 1, :] = v_next_weak[:, None]
     next_v[:, 2, :] = v_next_strong
@@ -161,6 +162,7 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     #only used for valid states, otherwise probability is already computed as 0 
 
     #Intermediate variables. considering that collision states are already considered elsewhere
+    K_valid = d_k.shape[0]
     half = (C.G - 1) // 2 
     h_d = C.S_h[0]
 
@@ -177,6 +179,8 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     d_int_passing[:, 0] = passing_obst_d[:, 1] - 1 #the distance to the first becomes the distance from first to second -1
     d_int_passing[:,1:(C.M-1)] = passing_obst_d[:, 2:] #shift indices 
     d_int_passing[:, -1] = 0                       #dummy value waiting for spawn disturbance for the next dynamics
+
+    #print(d_int_passing)
     
     passing_obst_h = h_k[is_passing_mask, :] #(is_passing, M) array
     h_int_passing = np.empty((passing_obst_h.shape))
@@ -195,16 +199,22 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     h_int_drifting = np.empty((drifting_obst_h.shape))
     h_int_drifting = drifting_obst_h.copy()              #if drifting obstacles heights remain the same
 
+    print(f"drifting_obst: {drifting_obst_d[2000:2500, :]}")
+    print(f"drifting_int: {d_int_drifting[2000:2500, :]}")
+
     #put everything back together into a (K,M) array 
-    d_int = np.empty((C.K, C.M))
+    d_int = np.empty((K_valid, C.M))
     d_int[is_passing_mask, :] = d_int_passing
     d_int[is_drifting_mask, :] = d_int_drifting
     
-    h_int = np.empty((C.K, C.M))
+    h_int = np.empty((K_valid, C.M))
     h_int[is_passing_mask, :] = h_int_passing
     h_int[is_drifting_mask, :] = h_int_drifting
     #now that we have the intermediate dynamics, We can see how spawning works
-    s = C.X - 1 - np.sum(d_int, axis=1)  #(K, )
+    s = C.X - 1 - np.sum(d_int, axis=1)  #(K_valid, )
+
+    s_drifting = s[is_drifting_mask]
+    print(f"s_drifting: {s_drifting[2000:2500]}")
 
     p_spawn = spawn_probability_vec(C, s)
 
@@ -214,17 +224,24 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     d_next_no_spawn = d_int
     h_next_no_spawn = h_int
 
-    mask_mmin = (d_int == 0) #(K,M) mask
-    has_zero = np.any(mask_mmin, axis=1) #finds if the row K has a 0 (consition of the mask = True,1) or not 
+    mask_mmin = (d_int[:, 1:] == 0) #(K_valid,M-1) mask
+    mask_smin = (s >= C.D_min)
+    has_zero = np.any(mask_mmin, axis=1) #finds if the row K has a 0 (condition of the mask = True,1) or not 
+
+    has_both = has_zero & mask_smin
     
     #we need to pick the first TRUE (what argmax does since true=1) only if has_zero is true, otherwise it's 0 because not found
-    #If not found, set as C.M as in the statement 
-    mmin = np.where(has_zero, np.argmax(mask_mmin, axis=1), C.M-1) #(K,) indices of where the first zero is
+    #If not found, set as C.M as in the statement. Need +1 because we found the mask as (K_valid, M-1)
+    mmin = np.where(has_zero, 1 + np.argmax(mask_mmin, axis=1), C.M-1) #(K_valid,) indices of where the first zero is
     
     #we need now to index for all the rows the column in which mmin was found
-    #np.arange(C.K) pairs each mmin with the corresponding row
-    d_int[np.arange(C.K), mmin] = s
+    #np.arange(K_valid) pairs each mmin with the corresponding row
+    rows = np.arange(K_valid)
+    d_int[rows[has_both], mmin[has_both]] = s[has_both]
     d_next_spawn = d_int
+
+    d_next_drifting=d_next_spawn[is_drifting_mask, :]
+    print(f"Drifting next: {d_next_drifting[0:20]}")
 
     #create an array to contain the possible heights in case of spawn 
     w_k_h = np.array(C.S_h)
@@ -232,10 +249,10 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     d_next = np.stack((d_next_no_spawn, d_next_spawn), axis = 2)
 
     #create result array indexed by state, number of obstacles, possible spawn heights, spawn/no_spawn cases
-    h_next = np.empty((C.K, C.M, len(C.S_h), 2))
+    h_next = np.empty((K_valid, C.M, len(C.S_h), 2))
     h_next[:, :, :, 0] = h_next_no_spawn[:, :, None]
     h_next[:, :, :, 1] = h_next_no_spawn[:, :, None]
-    h_next[np.arange(C.K), mmin, :, 1] = w_k_h[None, :]      #every row gets filled with the possible heights for each mmin 
+    h_next[rows[has_both], mmin[has_both], :, 1] = w_k_h[None, :]      #every row gets filled with the possible heights for each mmin 
 
     return d_next, h_next, p_spawn
 

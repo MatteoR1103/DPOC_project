@@ -63,16 +63,39 @@ def compute_transition_probabilities(C:Const) -> np.array:
     d_k = np.array([s[2 : 2 + C.M] for s in state_space]) #(K,M) 
     h_k = np.array([s[2 + C.M : ] for s in state_space])  #(K,M)
     
-    #Next height dynamics
-    y_k1 = compute_height_dynamics(y_k = y_k, v_k=v_k, C=C) #(K,)
+    half = (C.G - 1) // 2
+    not_in_gap = abs(y_k - h_k[:,0]) > half
+    in_col_1 = d_k[:,0] == 0   #mask selcting where we have an obst in 1st column
+
+    is_colliding_mask = not_in_gap & in_col_1 #(K,) array of booleans indicating whether it's passing or not
+    valid = np.logical_not(is_colliding_mask)
+    valid_indices = np.nonzero(valid)[0] 
+
+    y_k_valid = y_k[valid]
+    v_k_valid = v_k[valid]
     
+    d_k_valid = d_k[valid, :]
+    h_k_valid = h_k[valid, :]
+
+    K_valid = y_k_valid.shape[0]
+    
+    # FROM NOW ON K HAS TO BE INTENDED AS THE VALID (NON-COLLIDING) STATE DIMENSION
+
+    #Next height dynamics
+    y_k1 = compute_height_dynamics(y_k = y_k_valid, v_k=v_k_valid, C=C) #(K,)
+
     #Next vel dynamics
     v_dev_inter = np.arange(-C.V_dev, C.V_dev + 1)
     flap_space_dim = len(v_dev_inter)
-    v_k1 = compute_vel_dynamics(v_k, input_space, v_dev_inter, C) #(K, input_space, 2*V_dev +1)
+    v_k1 = compute_vel_dynamics(v_k_valid, input_space, v_dev_inter, C) #(K, input_space, 2*V_dev +1)
 
     #Next obstacles' dynamics
-    d_k1, h_k1, p_spawn = compute_obst_dynamics(d_k, h_k, y_k, C) #tuple((K,M,2), (K, M, len(S_h), 2), (K,))
+    d_k1, h_k1, p_spawn = compute_obst_dynamics(d_k_valid, h_k_valid, y_k_valid, C) #tuple((K,M,2), (K, M, len(S_h), 2), (K,))
+
+    y_k1_int = y_k1.astype(int)
+    v_k1_int = v_k1.astype(int)
+    d_k1_int = d_k1.astype(int)
+    h_k1_int = h_k1.astype(int)
 
     # now we need to factor in all probabilities at once. The probability of going from one state to the other when applying control action u
     # depends on the following factors: 
@@ -90,35 +113,39 @@ def compute_transition_probabilities(C:Const) -> np.array:
     # TODO: for each state build an array that contains all the possible next_states. For how this was built, the calculation of 
     # probabilities is actually the same for each current state and can be done vectorially
 
-    current_states = np.arange(C.K)
+    current_states = valid_indices
     for i in range(2): #no spawn (i=0) / spawn (i=1)
         for u in range(C.L):
             if u == 0 or u == 1: # no_flap/weak_flap
                 if i == 0: #no spawn
-                    tuples = [(y_k1[s], v_k1[s, u, 0], *d_k1[s, :, i], *h_k1[s, :, 0, i]) for s in range(C.K)]     
+                    tuples = [(y_k1_int[s], v_k1_int[s, u, 0], *d_k1_int[s, :, i], *h_k1_int[s, :, 0, i]) for s in range(K_valid)]     
                     indices = [index_map[t] for t in tuples]
-                    P[current_states, indices, u] = (1-p_spawn) #deterministic update for velocities for no flap or weak flap, only stochastic thing is no_spawn 
+                    np.add.at(P[:, :, u], (current_states, indices), (1 - p_spawn)) 
+                    #deterministic update for velocities for no flap or weak flap, only stochastic thing is no_spawn 
+                    #np.add.at handles cases in which multiple indices are the same, and adds probabilities up
                 
                 else: #spawn 
                     for h in range(len(C.S_h)):    
-                        tuples = [(y_k1[s], v_k1[s, u, 0], *d_k1[s, :, i], *h_k1[s, :, h, i]) for s in range(C.K)]     
+                        tuples = [(y_k1_int[s], v_k1_int[s, u, 0], *d_k1_int[s, :, i], *h_k1_int[s, :, h, i]) for s in range(K_valid)]     
                         indices = [index_map[t] for t in tuples]
-                        P[current_states, indices, u] = (1/w_h_dim)*(p_spawn)
+                        np.add.at(P[:, :, u], (current_states, indices), (1/w_h_dim)*(p_spawn))
 
             else: #strong flap
                 if i == 0: #no spawn
                     for v in range(flap_space_dim):
-                        tuples = [(y_k1[s], v_k1[s, u, v], *d_k1[s, :, i], *h_k1[s, :, 0, i]) for s in range(C.K)]     
+                        tuples = [(y_k1_int[s], v_k1_int[s, u, v], *d_k1_int[s, :, i], *h_k1_int[s, :, 0, i]) for s in range(K_valid)]     
                         indices = [index_map[t] for t in tuples]
-                        P[current_states, indices, u] = (1/flap_space_dim)*(1-p_spawn) #stochastic update for velocities this time 
+                        np.add.at(P[:, :, u], (current_states, indices), (1/flap_space_dim)*(1-p_spawn)) #stochastic update for velocities this time 
                 
                 else: #spawn 
                     for v in range(flap_space_dim):
                         for h in range(len(C.S_h)):    
-                            tuples = [(y_k1[s], v_k1[s, u, v], *d_k1[s, :, i], *h_k1[s, :, h, i]) for s in range(C.K)]     
+                            tuples = [(y_k1_int[s], v_k1_int[s, u, v], *d_k1_int[s, :, i], *h_k1_int[s, :, h, i]) for s in range(K_valid)]     
                             indices = [index_map[t] for t in tuples]
-                            P[current_states, indices, u] = (1/flap_space_dim)*(1/w_h_dim)*(p_spawn) #stochastic update for velocities this time 
+                            np.add.at(P[:, :, u], (current_states, indices), (1/flap_space_dim)*(1/w_h_dim)*(p_spawn))
             
+    
+    
     return P
 
 
