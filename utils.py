@@ -213,7 +213,7 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     #now that we have the intermediate dynamics, We can see how spawning works
     s = C.X - 1 - np.sum(d_int, axis=1)  #(K_valid, )
 
-    s_drifting = s[is_drifting_mask]
+    #s_drifting = s[is_drifting_mask]
     #print(f"s_drifting: {s_drifting[2000:2500]}")
 
     p_spawn = spawn_probability_vec(C, s)
@@ -240,7 +240,7 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     d_int[rows[has_both], mmin[has_both]] = s[has_both]
     d_next_spawn = d_int
 
-    d_next_drifting=d_next_spawn[is_drifting_mask, :]
+    #d_next_drifting=d_next_spawn[is_drifting_mask, :]
     #print(f"Drifting next: {d_next_drifting[0:20]}")
 
     #create an array to contain the possible heights in case of spawn 
