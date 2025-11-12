@@ -78,6 +78,8 @@ def compute_transition_probabilities(C:Const) -> np.array:
     h_k_valid = h_k[valid, :]
 
     K_valid = y_k_valid.shape[0]
+
+    print(f"K_valid = {K_valid}")
     
     # FROM NOW ON K HAS TO BE INTENDED AS THE VALID (NON-COLLIDING) STATE DIMENSION
 
@@ -120,6 +122,7 @@ def compute_transition_probabilities(C:Const) -> np.array:
                 if i == 0: #no spawn
                     tuples = [(y_k1_int[s], v_k1_int[s, u, 0], *d_k1_int[s, :, i], *h_k1_int[s, :, 0, i]) for s in range(K_valid)]     
                     indices = [index_map[t] for t in tuples]
+                    #print(f"indices and current states: {len(indices), len(current_states)}")
                     np.add.at(P[:, :, u], (current_states, indices), (1 - p_spawn)) 
                     #deterministic update for velocities for no flap or weak flap, only stochastic thing is no_spawn 
                     #np.add.at handles cases in which multiple indices are the same, and adds probabilities up
@@ -128,6 +131,7 @@ def compute_transition_probabilities(C:Const) -> np.array:
                     for h in range(len(C.S_h)):    
                         tuples = [(y_k1_int[s], v_k1_int[s, u, 0], *d_k1_int[s, :, i], *h_k1_int[s, :, h, i]) for s in range(K_valid)]     
                         indices = [index_map[t] for t in tuples]
+                        #print(f"indices and current states: {len(indices), len(current_states)}")
                         np.add.at(P[:, :, u], (current_states, indices), (1/w_h_dim)*(p_spawn))
 
             else: #strong flap
@@ -135,6 +139,7 @@ def compute_transition_probabilities(C:Const) -> np.array:
                     for v in range(flap_space_dim):
                         tuples = [(y_k1_int[s], v_k1_int[s, u, v], *d_k1_int[s, :, i], *h_k1_int[s, :, 0, i]) for s in range(K_valid)]     
                         indices = [index_map[t] for t in tuples]
+                        #print(f"indices and current states: {len(indices), len(current_states)}")
                         np.add.at(P[:, :, u], (current_states, indices), (1/flap_space_dim)*(1-p_spawn)) #stochastic update for velocities this time 
                 
                 else: #spawn 
@@ -142,9 +147,23 @@ def compute_transition_probabilities(C:Const) -> np.array:
                         for h in range(len(C.S_h)):    
                             tuples = [(y_k1_int[s], v_k1_int[s, u, v], *d_k1_int[s, :, i], *h_k1_int[s, :, h, i]) for s in range(K_valid)]     
                             indices = [index_map[t] for t in tuples]
+                            #print(f"indices and current states: {len(indices), len(current_states)}")
                             np.add.at(P[:, :, u], (current_states, indices), (1/flap_space_dim)*(1/w_h_dim)*(p_spawn))
-            
-    
+    """
+    PROBABILITY CHECK PASSED
+    sum_probs = P.sum(axis=1)  # shape (K, L)
+
+    # Identify rows that do not sum to 1 within a small tolerance
+    bad_mask = np.abs(sum_probs - 1.0) > 1e-8
+    bad_indices = np.argwhere(bad_mask)
+
+    if bad_indices.size == 0:
+        print("All (state, action) pairs correctly normalize to 1.")
+    else:
+        print(f"Found {len(bad_indices)} (state, action) pairs not normalized:")
+        for k, u in bad_indices:
+            print(f"  State {k}, Action {u}, Sum = {sum_probs[k, u]:.6f}")
+    """
     
     return P
 

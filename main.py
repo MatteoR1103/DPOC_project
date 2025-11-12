@@ -25,6 +25,7 @@ from ComputeTransitionProbabilities import compute_transition_probabilities
 from ComputeExpectedStageCosts import compute_expected_stage_cost
 from Solver import solution
 import simulation
+import time
 
 
 def main(use_solution_if_exist=True) -> None:
@@ -49,7 +50,10 @@ def main(use_solution_if_exist=True) -> None:
     if u_opt == None: 
         # Build P and Q
         print("Computing transition probabilities P ...")
+        start = time.time()
         P = compute_transition_probabilities(C)
+        end = time.time()
+        print(f"Execution time: {end - start:.3f} seconds")
         print(f"P shape: {P.shape}")
 
         print("Computing expected stage costs Q ...")

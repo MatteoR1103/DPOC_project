@@ -199,8 +199,8 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     h_int_drifting = np.empty((drifting_obst_h.shape))
     h_int_drifting = drifting_obst_h.copy()              #if drifting obstacles heights remain the same
 
-    print(f"drifting_obst: {drifting_obst_d[2000:2500, :]}")
-    print(f"drifting_int: {d_int_drifting[2000:2500, :]}")
+    #print(f"drifting_obst: {drifting_obst_d[2000:2500, :]}")
+    #print(f"drifting_int: {d_int_drifting[2000:2500, :]}")
 
     #put everything back together into a (K,M) array 
     d_int = np.empty((K_valid, C.M))
@@ -214,7 +214,7 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     s = C.X - 1 - np.sum(d_int, axis=1)  #(K_valid, )
 
     s_drifting = s[is_drifting_mask]
-    print(f"s_drifting: {s_drifting[2000:2500]}")
+    #print(f"s_drifting: {s_drifting[2000:2500]}")
 
     p_spawn = spawn_probability_vec(C, s)
 
@@ -241,7 +241,7 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     d_next_spawn = d_int
 
     d_next_drifting=d_next_spawn[is_drifting_mask, :]
-    print(f"Drifting next: {d_next_drifting[0:20]}")
+    #print(f"Drifting next: {d_next_drifting[0:20]}")
 
     #create an array to contain the possible heights in case of spawn 
     w_k_h = np.array(C.S_h)
