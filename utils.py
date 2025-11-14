@@ -166,14 +166,17 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     half = (C.G - 1) // 2 
     h_d = C.S_h[0]
 
+    d_k_copy = d_k.copy()
+    h_k_copy = h_k.copy()
+
     in_gap = abs(y_k - h_k[:,0]) <= half
-    in_col_1 = d_k[:,0] == 0   #mask selcting where we have an obst in 1st column
+    in_col_1 = d_k_copy[:,0] == 0   #mask selcting where we have an obst in 1st column
 
     is_passing_mask = in_gap & in_col_1 #(K,) array of booleans indicating whether it's passing or not
     is_drifting_mask = np.logical_not(is_passing_mask)#(K,) array of booleans indicating whether it's drifting or not
 
     #compute dynamics for passing scenario
-    passing_obst_d = d_k[is_passing_mask, :] #(is_passing, M) array
+    passing_obst_d = d_k_copy[is_passing_mask, :] #(is_passing, M) array
     d_int_passing = np.empty((passing_obst_d.shape))
     
     d_int_passing[:, 0] = passing_obst_d[:, 1] - 1 #the distance to the first becomes the distance from first to second -1
@@ -182,25 +185,22 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
 
     #print(d_int_passing)
     
-    passing_obst_h = h_k[is_passing_mask, :] #(is_passing, M) array
+    passing_obst_h = h_k_copy[is_passing_mask, :] #(is_passing, M) array
     h_int_passing = np.empty((passing_obst_h.shape))
     
     h_int_passing[:, 0:(C.M-1)] = passing_obst_h[:, 1:] #shift indices 
     h_int_passing[:, -1] = h_d                      #dummy value waiting for spawn disturbance for the next dynamics
 
     #compute dynamics for normal drifting scenario
-    drifting_obst_d = d_k[is_drifting_mask, :]
+    drifting_obst_d = d_k_copy[is_drifting_mask, :]
     d_int_drifting = np.empty((drifting_obst_d.shape))
     
     d_int_drifting[:, 0] = drifting_obst_d[:, 0] - 1 #the distance to the first becomes the distance from first - 1
     d_int_drifting[:, 1:] = drifting_obst_d[:, 1:]   #others remain unchanged 
 
-    drifting_obst_h = h_k[is_drifting_mask, :]           #(is_passing, M) array
+    drifting_obst_h = h_k_copy[is_drifting_mask, :]           #(is_passing, M) array
     h_int_drifting = np.empty((drifting_obst_h.shape))
     h_int_drifting = drifting_obst_h.copy()              #if drifting obstacles heights remain the same
-
-    #print(f"drifting_obst: {drifting_obst_d[2000:2500, :]}")
-    #print(f"drifting_int: {d_int_drifting[2000:2500, :]}")
 
     #put everything back together into a (K,M) array 
     d_int = np.empty((K_valid, C.M))
@@ -210,19 +210,25 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     h_int = np.empty((K_valid, C.M))
     h_int[is_passing_mask, :] = h_int_passing
     h_int[is_drifting_mask, :] = h_int_drifting
+
     #now that we have the intermediate dynamics, We can see how spawning works
     s = C.X - 1 - np.sum(d_int, axis=1)  #(K_valid, )
-
-    #s_drifting = s[is_drifting_mask]
-    #print(f"s_drifting: {s_drifting[2000:2500]}")
 
     p_spawn = spawn_probability_vec(C, s)
 
     # compute next state obstacles. for obstacles' distances it's either the same as the intermediate, or = s if it has spawned
     # create all possible outcomes, and probability will be taken into account later on in the ComputeTransitionProbabilities
 
-    d_next_no_spawn = d_int
-    h_next_no_spawn = h_int
+    d_next_no_spawn = d_int.copy()
+    h_next_no_spawn = h_int.copy()
+
+    d_next_spawn = d_int.copy()
+    h_next_spawn = h_int.copy()
+    
+    #CREATE A DUMMY STATE FOR P_SPAWN = 1 CASES SO AS NOT TO CREATE MAPPING KeyError 
+    mask_spawn1 = np.isclose(p_spawn, 1.0, atol=1e-8)
+    d_next_no_spawn[mask_spawn1, :] = d_k[0, :] 
+    h_next_no_spawn[mask_spawn1, :] = h_k[0, :] 
 
     mask_mmin = (d_int[:, 1:] == 0) #(K_valid,M-1) mask
     mask_smin = (s >= C.D_min)
@@ -237,11 +243,7 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     #we need now to index for all the rows the column in which mmin was found
     #np.arange(K_valid) pairs each mmin with the corresponding row
     rows = np.arange(K_valid)
-    d_int[rows[has_both], mmin[has_both]] = s[has_both]
-    d_next_spawn = d_int
-
-    #d_next_drifting=d_next_spawn[is_drifting_mask, :]
-    #print(f"Drifting next: {d_next_drifting[0:20]}")
+    d_next_spawn[rows[has_both], mmin[has_both]] = s[has_both]
 
     #create an array to contain the possible heights in case of spawn 
     w_k_h = np.array(C.S_h)
@@ -251,7 +253,7 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     #create result array indexed by state, number of obstacles, possible spawn heights, spawn/no_spawn cases
     h_next = np.empty((K_valid, C.M, len(C.S_h), 2))
     h_next[:, :, :, 0] = h_next_no_spawn[:, :, None]
-    h_next[:, :, :, 1] = h_next_no_spawn[:, :, None]
+    h_next[:, :, :, 1] = h_next_spawn[:, :, None]
     h_next[rows[has_both], mmin[has_both], :, 1] = w_k_h[None, :]      #every row gets filled with the possible heights for each mmin 
 
     return d_next, h_next, p_spawn

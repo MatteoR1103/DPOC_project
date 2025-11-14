@@ -35,12 +35,15 @@ def compute_transition_probabilities(C:Const) -> np.array:
             - P[i,j,l] corresponds to the probability of transitioning
               from the state i to the state j when input l is applied.
     """
+
     P = np.zeros((C.K, C.K, C.L))
-    
     #PRECOMPUTATIONS: 
     # Create the state space and build numerical encoding for later indexing 
     input_space = C.input_space
     state_space = np.array(C.state_space, dtype=np.int64)
+
+    state_space_for_keys = state_space.copy()
+    state_space_for_keys[:, 1] += C.V_max
     dims = [
             len(C.S_y),
             len(C.S_v),
@@ -56,7 +59,7 @@ def compute_transition_probabilities(C:Const) -> np.array:
     #Here we choose y to vary fastest (stride[0]=1), then v varies as soon as y runs out of dimension, so varies each len(C.S_y). Then the third object
     # varies as soon as both run out of dimension, so each len(C.S_y)*len(C.S_v), which is what cumprod is doing
     # To effectively encode the states in the state space we multiply each parameter for the corresponding number on the stride, and sum them up together 
-    encoded = (state_space * stride).sum(axis=1)
+    encoded = (state_space_for_keys * stride).sum(axis=1)
     #Now we effectively need to create the indexing array. To do so we must remember that keys are not consecutive because of invalid states
     #Therefore we fill the array with -1 to flag with invalid states, and the array must be at least max_key dimensional. 
     max_key = encoded.max()
@@ -65,6 +68,7 @@ def compute_transition_probabilities(C:Const) -> np.array:
     #Fill the array with the unique encoding keys. This is an inverse array: given the key it returns the corresponding state. If state s has key k,
     # and the key can be computed by (s*stride), the map returns the state corresponding to s (can be retrieved thanks to encoded that computes for every valid state)  
     state_index_map[encoded] = np.arange(C.K)
+    
 
     # TODO fill the transition probability matrix P here
     w_h_dim = len(C.S_h)
@@ -106,6 +110,7 @@ def compute_transition_probabilities(C:Const) -> np.array:
 
     #Next obstacles' dynamics
     d_k1, h_k1, p_spawn = compute_obst_dynamics(d_k_valid, h_k_valid, y_k_valid, C) #tuple((K,M,2), (K, M, len(S_h), 2), (K,))
+    
 
     y_k1_int = y_k1.astype(int)
     v_k1_int = v_k1.astype(int)
@@ -129,7 +134,6 @@ def compute_transition_probabilities(C:Const) -> np.array:
     # probabilities is actually the same for each current state and can be done vectorially
    
     current_states = valid_indices
-
     for u in range(C.L):
         #start_loop = time.time()
         all_cstates = []
@@ -138,36 +142,43 @@ def compute_transition_probabilities(C:Const) -> np.array:
         for i in range(2): #no spawn (i=0) / spawn (i=1)
             if u == 0 or u == 1: # no_flap/weak_flap
                 if i == 0: #no spawn
-                    tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0], d_k1_int[:, :, i], h_k1_int[:, :, 0, i]))
+                    tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0] + C.V_max, d_k1_int[:, :, 0], h_k1_int[:, :, 0, 0]))
                     encoded_next = (tuples * stride).sum(axis=1)
                     indices = state_index_map[encoded_next]
+                    #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32) #(K_valid, )
+
                     all_cstates.append(current_states)
                     all_nstates.append(indices)
                     all_probs.append(1-p_spawn)#deterministic update for velocities for no flap or weak flap, only stochastic thing is no_spawn 
+                    
                 else: #spawn 
                     for h in range(len(C.S_h)):  
-                        tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0], d_k1_int[:, :, i], h_k1_int[:, :, h, i]))
+                        tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0] + C.V_max, d_k1_int[:, :, 1], h_k1_int[:, :, h, 1]))
                         encoded_next = (tuples * stride).sum(axis=1)
                         indices = state_index_map[encoded_next]
+                        #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32)
                         all_cstates.append(current_states)
                         all_nstates.append(indices)
                         all_probs.append((1/w_h_dim)*(p_spawn))
+                              
 
             else: #strong flap
                 if i == 0: #no spawn
                     for v in range(flap_space_dim):
-                        tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v], d_k1_int[:, :, i], h_k1_int[:, :, 0, i]))
+                        tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v] + C.V_max, d_k1_int[:, :, 0], h_k1_int[:, :, 0, 0]))
                         encoded_next = (tuples * stride).sum(axis=1)
                         indices = state_index_map[encoded_next]
+                        #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32)
                         all_cstates.append(current_states)
                         all_nstates.append(indices)
                         all_probs.append((1/flap_space_dim)*(1-p_spawn))
                 else: #spawn 
                     for v in range(flap_space_dim):
                         for h in range(len(C.S_h)):    
-                            tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v], d_k1_int[:, :, i], h_k1_int[:, :, h, i]))
+                            tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v] + C.V_max, d_k1_int[:, :, 1], h_k1_int[:, :, h, 1]))
                             encoded_next = (tuples * stride).sum(axis=1)
                             indices = state_index_map[encoded_next]
+                            #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32)
                             all_cstates.append(current_states)
                             all_nstates.append(indices)
                             all_probs.append((1/flap_space_dim)*(1/w_h_dim)*(p_spawn))
@@ -177,28 +188,6 @@ def compute_transition_probabilities(C:Const) -> np.array:
         all_nstates = np.concatenate(all_nstates)
         all_probs = np.concatenate(all_probs)
         np.add.at(P[:, :, u], (all_cstates, all_nstates), all_probs)
-
-    
-    #Check passed
-    # Identify rows that do not sum to 1 within a small tolerance
-    """
-    sum_probs = P.sum(axis=1)  # shape (K, L)
-    tol = 1e-8
-    bad_mask_1 = np.abs(sum_probs - 1.0) > tol
-    bad_mask_0 = sum_probs > tol
-    bad_mask = bad_mask_0 & bad_mask_1
-
-    bad_indices = np.argwhere(bad_mask_1)
-
-    if bad_indices.size == 0:
-        print("All (state, action) pairs correctly normalize to 1.")
-    else:
-        print(f"Found {len(bad_indices)} (state, action) pairs not normalized:")
-        #for k, u in bad_indices:
-        #    print(f"  State {k}, Action {u}, Sum = {sum_probs[k, u]:.6f}")
-    
-    """
-    
     
     
     return P

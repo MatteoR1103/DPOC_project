@@ -50,10 +50,10 @@ def main(use_solution_if_exist=True) -> None:
     if u_opt == None: 
         # Build P and Q
         print("Computing transition probabilities P ...")
-        start = time.time()
+        
         P = compute_transition_probabilities(C)
-        end = time.time()
-        print(f"Execution time: {end - start:.3f} seconds")
+        #end = time.time()
+        #print(f"Execution time: {end - start:.3f} seconds")
         print(f"P shape: {P.shape}")
 
         print("Computing expected stage costs Q ...")
@@ -62,8 +62,10 @@ def main(use_solution_if_exist=True) -> None:
         
         # Solve for optimal cost and policy
         print("Solving for optimal policy ...")
+        start = time.time()
         J_opt, u_opt = solution(C)
-        print("Solution obtained.")
+        end = time.time()
+        print(f"Solution obtained in {end-start}.")
         print("J_opt (min/max):", float(np.min(J_opt)), float(np.max(J_opt)))
 
     # Run simulation

@@ -69,6 +69,10 @@ def run_test(test_nr: int) -> None:
     # check all rows in [0,1] (within tolerance)
     row_sums = P.sum(axis=1)  # (K, L)
     eps = 1e-10
+
+    g_P = gold["P"]
+    print(f"G_shape:{g_P.shape} ")
+    print(f"P.shape: {P.shape}")
     if not (np.all(row_sums <= 1 + eps) and np.all(row_sums >= -eps)):
         print("[ERROR] Some probability row sums are outside [0,1].")
         passed = False
@@ -80,6 +84,24 @@ def run_test(test_nr: int) -> None:
     if not np.allclose(P, gold["P"], rtol=RTOL, atol=ATOL):
         print("Wrong transition probabilities")
         passed = False
+         # DEBUG: find all entries that differ beyond the tolerance and report them
+        diff_mask = ~np.isclose(P, g_P, rtol=RTOL, atol=ATOL)
+        same_mask = np.isclose(P, g_P, rtol=RTOL, atol=ATOL)
+        diff_indices = np.argwhere(diff_mask)
+        same_indices = np.argwhere(same_mask)
+        n_diff = diff_indices.shape[0]
+        n_same = same_indices.shape[0]
+        print(f"Found {n_diff} differing (i,j,u) entries between P and golden g_P.")
+        print(f"Found {n_same} same (i,j,u) entries between P and golden g_P.")
+        for idx in diff_indices:
+            i, j, u = idx.tolist()
+            pval = float(P[i, j, u])
+            gval = float(g_P[i, j, u])
+            print(f"P[{i},{j},{u}] = {pval:.12g}, g_P = {gval:.12g}")
+        passed = False
+        global_state = 9
+        print(f"prob g: {g_P[global_state,:,0]}")
+        print(f"prob p: {P[global_state,:,0]}")
     else:
         print("Correct transition probabilities")
 
@@ -90,8 +112,17 @@ def run_test(test_nr: int) -> None:
         print("Correct expected stage costs")
 
     J_opt, u_opt = solution(C)
+    g_J = gold["J"]
     if not np.allclose(J_opt, gold["J"], rtol=RTOL, atol=ATOL):
         print("Wrong optimal cost")
+        diff_mask = ~np.isclose(J_opt, g_J, rtol=RTOL, atol=ATOL)
+        diff_indices = np.argwhere(diff_mask)
+        n_diff = diff_indices.shape[0]
+        print(f"Found {n_diff} differing (i) entries between J and golden g_J.")
+        for idx in diff_indices:
+            Jval = float(J_opt[idx])
+            gval = float(g_J[idx])
+            print(f"J[{idx}] = {Jval:.12g}, g_J = {gval:.12g}")
         passed = False
     else:
         print("Correct optimal cost")
