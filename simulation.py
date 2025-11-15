@@ -12,7 +12,7 @@ from utils import is_collision, is_passing, spawn_probability
 default_C = Const()
 
 RNG_SEED = 42
-FPS = 1             # in frames per second
+FPS = 20             # in frames per second
 CELL_WIDTH = 48     # in pixels
 
 # ----- class for state representation -----

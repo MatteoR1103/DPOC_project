@@ -89,18 +89,66 @@ from scipy.sparse import csr_matrix
     return J_opt, u_opt
 """
 
+def compare_dense_sparse(P_dense, P_sparse_list, tol=1e-12):
+    """
+    P_dense: (K,K,L) dense array
+    P_sparse_list: list of length L, each csr_matrix(K,K)
+    """
 
+    K, _, L = P_dense.shape
+
+    for u in range(L):
+        P_s = P_sparse_list[u]
+        P_d = P_dense[:, :, u]
+
+        print(f"\n=== Checking action u = {u} ===")
+
+        # 1. Compare row sums
+        rowsum_dense = P_d.sum(axis=1)
+        rowsum_sparse = np.array(P_s.sum(axis=1)).flatten()
+
+        if not np.allclose(rowsum_dense, rowsum_sparse, atol=tol, rtol=0):
+            bad = np.where(~np.isclose(rowsum_dense, rowsum_sparse, atol=tol))[0]
+            print(f"Row sum mismatch in {len(bad)} states")
+            print("First few:", bad[:10])
+        else:
+            print("Row sums: OK")
+
+        # 2. Compare full matrix values (sparse indices only)
+        coo = P_s.tocoo()
+        diff_vals = np.abs(P_d[coo.row, coo.col] - coo.data)
+
+        if not np.all(diff_vals < tol):
+            bad = np.where(diff_vals >= tol)[0]
+            print(f"Value mismatch in {len(bad)} nonzero entries")
+            print("Example:", coo.row[bad[0]], coo.col[bad[0]],
+                  P_d[coo.row[bad[0]], coo.col[bad[0]]], coo.data[bad[0]])
+        else:
+            print("Sparse values: OK")
+
+        # 3. Check that dense does not contain nonzeros where sparse has zero
+        dense_nz = np.nonzero(P_d)
+        sparse_nz = set(zip(coo.row, coo.col))
+
+        missing_in_sparse = [
+            (i, j) for (i, j) in zip(*dense_nz)
+            if (i, j) not in sparse_nz
+        ]
+
+        if missing_in_sparse:
+            print(f"Sparse missing {len(missing_in_sparse)} nonzero entries from dense.")
+            print("Example:", missing_in_sparse[0])
+        else:
+            print("No missing entries: OK")
+
+    print("\n=== All checks complete ===")
 
 def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
-    #P = compute_transition_probabilities(C)   # (K, K, L)
     Q = compute_expected_stage_cost(C)        # (K, L)
     K, L = C.K, C.L
-    #P_sparse = []
-    #for u in range(C.L):
-    #    P_sparse.append(csr_matrix(P[:, :, u]))
-    
+    #P = compute_transition_probabilities(C)
+    start = time.time()
     P_sparse = []
-    #P = np.zeros((C.K, C.K, C.L))
     #PRECOMPUTATIONS: 
     # Create the state space and build numerical encoding for later indexing 
     input_space = C.input_space
@@ -253,6 +301,10 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
         all_probs = np.concatenate(all_probs)
         P_sparse.append(coo_matrix((all_probs, (all_cstates, all_nstates)), shape=(C.K, C.K)).tocsr())
 
+    end = time.time()
+    print(f"Time elapsed with sparse matrix construction: {end-start}")
+    #compare_dense_sparse(P, P_sparse)
+    
     J = np.zeros(K)
     #max_iters = 1000
     tol = 1e-5
@@ -260,9 +312,6 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     count = 0
     while do:
         # Bellman backup: for each (i,u)
-        # J_new(i,u) = Q(i,u) + sum_j P(i,j,u) * J(j)
-        #J_Q = Q + np.sum(P * J[None, :, None], axis=1)  # (K, L)
-        #J_new = J_Q.min(axis=1)                         # (K,)
         J_new = np.empty_like(J)
         count += 1
 
@@ -274,12 +323,21 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
                 J_new = np.minimum(J_new, J_new_u)
 
         if np.max(np.abs(J_new - J)) < tol:
+
             break
 
         J = J_new
 
     # Extract policy corresponding to final J
-    J_Q = Q + np.sum(P * J[None, :, None], axis=1)      # (K, L)
+
+    J_Q = np.empty((C.K, C.L))
+    for u in range(C.L):
+        #calculate corresponding J_Q for each input with the optimal J
+        J_Q[:, u] = Q[:, u] + P_sparse[u].dot(J)
+
+    
+    
+    #J_Q = Q + np.sum(P * J[None, :, None], axis=1)      # (K, L)
     u_opt_ind = np.argmin(J_Q, axis=1)
     u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
     print(f"Count{count}")
