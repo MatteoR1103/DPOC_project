@@ -20,133 +20,160 @@ import numpy as np
 from Const import Const
 from ComputeTransitionProbabilities import *
 from ComputeExpectedStageCosts import *
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, coo_matrix
 
+def modified_policy(
+    C: Const,
+    P_sparse: list[csr_matrix],
+    Q: np.ndarray,
+    eval_iters: int = 20,   # number of times THE POLICY gets improved (threshold is ~20)
+    tol: float = 1e-5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Modified policy iteration using sparse transition matrices.
 
-"""def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
-    # You're free to use the functions below, implemented in the previous
-    # tasks, or come up with something else.
-    # If you use them, you need to add the corresponding imports 
-    # at the top of this file.
-    # P = compute_transition_probabilities(C)
-    # Q = compute_expected_stage_cost(C)
-    
-    # TODO: implement Value Iteration, Policy Iteration, Linear Programming 
-    # or a combination of these
+    Args:
+        C: problem constants
+        P_sparse: list of length C.L, each element is a csr_matrix of shape (K, K)
+                  with P_sparse[u][i, j] = P(i -> j | action u)
+        Q: expected stage cost, shape (K, L)
+        eval_iters: number of Bellman iterations for policy evaluation step
+        tol: tolerance for early stopping of the evaluation loop
 
-    # Load dynamics and costs
-    P = compute_transition_probabilities(C)     # (K, K, L)
-    Q = compute_expected_stage_cost(C)          # (K, L)
-
-    K= C.K
-
-    # Initialize
+    Returns:
+        J_opt: optimal cost-to-go, shape (K,)
+        u_opt: optimal control values (actual inputs, not indices), shape (K,)
+    """
+    # Initialize value function and an initial proper policy (all "no flap")
+    K, L = C.K, C.L
     J = np.zeros(K)
-    current_policy = np.zeros(K, dtype=int)     # start with all actions = 0 (no flap)
+    current_policy = np.zeros(K, dtype=int)  # action indices in {0, ..., L-1}
 
-    diff = True
-
-    while diff:
-        old_policy = current_policy.copy()
-
-        # ---------------------------------------
-        # 1) POLICY EVALUATION
-        # ---------------------------------------
-
+    while True:
+        old_policy = current_policy.copy()  # save the old policy
         a_idx = current_policy
-        # Extract P_pi(i,j) = P(i,j,a_i)
-        P_pi = np.take_along_axis(
-            P,
-            a_idx[:, None, None],
-            axis=2
-        )[..., 0]     # shape (K,K)
 
-        # Extract Q_pi(i) = Q(i,a_i)
-        Q_pi = np.take_along_axis(Q, a_idx[:, None], axis=1)[:, 0]  # shape (K,)
+        # ---------- 1) Policy evaluation (approximate) ----------
+        for _ in range(eval_iters):
+            J_old = J.copy()
 
-        # Evaluate J through fixed number of Bellman iterations
-        for _ in range(2500):
-            J = Q_pi + P_pi @ J
+            # Precompute P_u * J for all actions w.r.t. J_old
+            PJ_list = [P_sparse[u].dot(J_old) for u in range(L)]
 
-        # ---------------------------------------
-        # 2) POLICY IMPROVEMENT
-        # ---------------------------------------
+            # Update J only on the rows that use each action u, the others are invalid
+            for u in range(L):
+                mask = (a_idx == u)
+                if not np.any(mask):
+                    continue
+                J[mask] = Q[mask, u] + PJ_list[u][mask]
 
-        # Compute Q(i,u) + sum_j P(i,j,u)*J(j)
-        J_Q = Q + np.sum(P * J[None, :, None], axis=1)   # shape (K,L)
+            # Optional early stop if evaluation converged enough (unlikely)
+            if np.max(np.abs(J - J_old)) < tol:
+                break
 
-        # Best action = argmin
-        current_policy = np.argmin(J_Q, axis=1)
+        # ---------- 2) Policy improvement ----------
+        # For each action u, compute Q(i,u) + sum_j P(i,j,u) * J(j)
+        Q_plus = np.empty((K, L))
+        for u in range(L):
+            Q_plus[:, u] = Q[:, u] + P_sparse[u].dot(J)
 
-        diff = np.any(current_policy != old_policy)
+        current_policy = np.argmin(Q_plus, axis=1)
 
-    # Final optimal cost from last policy to be returned
-    J_Q = Q + np.sum(P * J[None, :, None], axis=1)
-    J_opt = np.min(J_Q, axis=1)
+        # Check for policy convergence
+        if np.all(current_policy == old_policy):
+            break
+
+    # Final optimal cost and policy
+    J_opt = Q_plus.min(axis=1)
     u_opt_ind = current_policy
+    u_opt = np.array([C.input_space[idx] for idx in u_opt_ind])
+
+    # J_opt improvement since we did not give it enough time
+    #J_opt, _ = value_iteration(C, P_sparse, Q, J_init = J_opt)
+    return J_opt, u_opt
+
+
+
+
+def value_iteration(C: Const, P_sparse: list[csr_matrix], Q, J_init = None, tol: float = 1e-5, iters: int = 500) -> tuple[np.ndarray, np.ndarray]:
+    J = np.zeros(C.K) #if (J_init is None) else J_init
+    count = 0
+    while True:
+        # Bellman backup: for each (i,u)
+        J_new = np.empty_like(J)
+        count += 1
+        
+        for u in range(C.L):
+            J_new = Q[:, u] + P_sparse[u].dot(J)
+            J = np.minimum(J_new, J)
+        
+        if (count % iters) == iters-1: 
+            J_conv = J.copy()
+
+        if (count % iters) == 0: 
+            if np.max(np.abs(J_conv - J)) < tol:
+                break
+
+
+    # Extract policy corresponding to final J
+    #end = time.time()
+    expected_value = np.column_stack([(P_sparse[u].dot(J))for u in range(C.L)])
+    J_Q = Q + expected_value
+    u_opt_ind = np.argmin(J_Q, axis=1)
     u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
 
-    return J_opt, u_opt
-"""
+    print(f"Count: {count}")
+    return (J, u_opt) 
 
-def compare_dense_sparse(P_dense, P_sparse_list, tol=1e-12):
-    """
-    P_dense: (K,K,L) dense array
-    P_sparse_list: list of length L, each csr_matrix(K,K)
-    """
+def GS_value_iteration(C: Const, P_sparse: list[csr_matrix], Q, tol: float = 1e-5, iters: int = 500) -> tuple[np.ndarray, np.ndarray]:
+    J = np.zeros(C.K)
 
-    K, _, L = P_dense.shape
+    start_idx = []
+    indptr_idx = []
+    probs = []
+    for u in range(C.L):
+        start_idx.append(P_sparse[u].indices)
+        indptr_idx.append(P_sparse[u].indptr)
+        probs.append(P_sparse[u].data)
 
-    for u in range(L):
-        P_s = P_sparse_list[u]
-        P_d = P_dense[:, :, u]
+    while True:
+        # Bellman backup: for each (i,u)
+        for iter in range(iters): 
+            for i in range(C.K):
+                J_cands = []
+                for u in range(C.L):
+                    st_idx = start_idx[u]
+                    iptr_idx = indptr_idx[u]
+                    pr = probs[u]
+                    next_idx = st_idx[iptr_idx[i]:iptr_idx[i+1]]
+                    p_ij = pr[iptr_idx[i]:iptr_idx[i+1]]
+                    next_V = J[next_idx]
+                    if p_ij.size == 0 : 
+                        J_u = Q[i, u]
+                    else: 
+                        J_u = Q[i, u] + np.dot(p_ij, next_V) 
+                    J_cands.append(J_u)
+                
+                J[i] = min(J_cands)
+            if iter == iters - 2: 
+                J_new = J.copy()
+                
+        if np.max(np.abs(J_new - J)) < tol:
+            break
 
-        print(f"\n=== Checking action u = {u} ===")
+    # Extract policy corresponding to final J
+    #end = time.time()
+    expected_value = np.column_stack([(P_sparse[u].dot(J))for u in range(C.L)])
+    J_Q = Q + expected_value
+    u_opt_ind = np.argmin(J_Q, axis=1)
+    u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
 
-        # 1. Compare row sums
-        rowsum_dense = P_d.sum(axis=1)
-        rowsum_sparse = np.array(P_s.sum(axis=1)).flatten()
-
-        if not np.allclose(rowsum_dense, rowsum_sparse, atol=tol, rtol=0):
-            bad = np.where(~np.isclose(rowsum_dense, rowsum_sparse, atol=tol))[0]
-            print(f"Row sum mismatch in {len(bad)} states")
-            print("First few:", bad[:10])
-        else:
-            print("Row sums: OK")
-
-        # 2. Compare full matrix values (sparse indices only)
-        coo = P_s.tocoo()
-        diff_vals = np.abs(P_d[coo.row, coo.col] - coo.data)
-
-        if not np.all(diff_vals < tol):
-            bad = np.where(diff_vals >= tol)[0]
-            print(f"Value mismatch in {len(bad)} nonzero entries")
-            print("Example:", coo.row[bad[0]], coo.col[bad[0]],
-                  P_d[coo.row[bad[0]], coo.col[bad[0]]], coo.data[bad[0]])
-        else:
-            print("Sparse values: OK")
-
-        # 3. Check that dense does not contain nonzeros where sparse has zero
-        dense_nz = np.nonzero(P_d)
-        sparse_nz = set(zip(coo.row, coo.col))
-
-        missing_in_sparse = [
-            (i, j) for (i, j) in zip(*dense_nz)
-            if (i, j) not in sparse_nz
-        ]
-
-        if missing_in_sparse:
-            print(f"Sparse missing {len(missing_in_sparse)} nonzero entries from dense.")
-            print("Example:", missing_in_sparse[0])
-        else:
-            print("No missing entries: OK")
-
-    print("\n=== All checks complete ===")
+    return J, u_opt
 
 def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     Q = compute_expected_stage_cost(C)        # (K, L)
     K, L = C.K, C.L
-    #P = compute_transition_probabilities(C)
+
     start = time.time()
     P_sparse = []
     #PRECOMPUTATIONS: 
@@ -155,7 +182,7 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     state_space = np.array(C.state_space, dtype=np.int64)
 
     state_space_for_keys = state_space.copy()
-    state_space_for_keys[:, 1] += C.V_max
+    state_space_for_keys[:, 1] += C.V_max    #offset to avoid negative indices offset 
     dims = [
             len(C.S_y),
             len(C.S_v),
@@ -180,14 +207,7 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     #Fill the array with the unique encoding keys. This is an inverse array: given the key it returns the corresponding state. If state s has key k,
     # and the key can be computed by (s*stride), the map returns the state corresponding to s (can be retrieved thanks to encoded that computes for every valid state)  
     state_index_map[encoded] = np.arange(C.K)
-    
-    # TODO fill the transition probability matrix P here
     w_h_dim = len(C.S_h)
-    #The transition probability first computes the dynamics considering the disturbances, and then assigns probabilities based on the
-    #reachable next states. This has to be done for all the possible states in the state space
-
-    ### POSE DYNAMICS ONE-SHOT COMPUTATION###
-    #Current heights, velocities and obstacles' poses
     
     y_k = np.array([s[0] for s in state_space]) #(K,)
     v_k = np.array([s[1] for s in state_space]) #(K,)
@@ -227,22 +247,6 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     v_k1_int = v_k1.astype(int)
     d_k1_int = d_k1.astype(int)
     h_k1_int = h_k1.astype(int)
-
-    # now we need to factor in all probabilities at once. The probability of going from one state to the other when applying control action u
-    # depends on the following factors: 
-    # - prob(y_k, y_k1)= 1 because deterministic
-    # - prob(v_k, v_k1)= depends on the distribution of w_k_flap which is uniform in {-v_dev, +v_dev}. The returned array of velocities 
-    #   has equal probability for each v_k, u
-    # - prob(d_k, d_k1)= depends on p_spawn. With p_spawn we have d_k1[:,:,1], with 1-p_spawn we have d_k1[:,:,0]
-    # - prob(h_k, h_k1)= depends on p_spawn. With p_spawn we have h_k1[:,:,:,1] with 1-p_spawn we have h_k1[:,:,:,0]. 
-    #   Values are uniformly distributed along axis=2 (0-indexed). For h_k1[:,:,:,0] they are all the same. For h_k1[:,:,:,0] they take same probability
-
-    # - Total prob of going from one state to another is: 1 * 1/(2v_dev + 1) * p_spawn * 1/(len(C.S_h)) for spawn case
-    # - Total prob of going from one state to another is: 1 * 1/(2v_dev + 1) * (1-p_spawn) for no-spawn case
-    # - sum(prob)=1! GOOD
-    
-    # TODO: for each state build an array that contains all the possible next_states. For how this was built, the calculation of 
-    # probabilities is actually the same for each current state and can be done vectorially
    
     current_states = valid_indices
     for u in range(C.L):
@@ -297,44 +301,7 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     print(f"Time elapsed with sparse matrix construction: {end-start}")
     #compare_dense_sparse(P, P_sparse)
     
-    J = np.zeros(K)
-    tol = 1e-5
-    count = 0
-    iters = 500
-    
-    while True:
-        # Bellman backup: for each (i,u)
-        J_new = np.empty_like(J)
-        count += 1
+    (J, u_opt) = value_iteration(C, P_sparse, Q, tol=1e-5, iters=500)
+    print(f"VI time: {end-start}")
 
-        #J = np.min([Q[:, u] + P_sparse[u].dot(J) for u in range(C.L)])
-        
-        for u in range(C.L):
-            J_new_u = Q[:, u] + P_sparse[u].dot(J)
-            if u == 0:
-                J_new = J_new_u
-            else:
-                J_new = np.minimum(J_new, J_new_u)
-        
-        if (count % iters) == 0: 
-            if np.max(np.abs(J_new - J)) < tol:
-                break
-
-        J = J_new
-
-    # Extract policy corresponding to final J
-
-    J_Q = np.empty((C.K, C.L))
-    for u in range(C.L):
-        #calculate corresponding J_Q for each input with the optimal J
-        J_Q[:, u] = Q[:, u] + P_sparse[u].dot(J)
-    
-    u_opt_ind = np.argmin(J_Q, axis=1)
-    u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
-
-    #print(f"Count{count}")
-
-    
-
-
-    return J, u_opt
+    return (J, u_opt)

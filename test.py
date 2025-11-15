@@ -84,24 +84,6 @@ def run_test(test_nr: int) -> None:
     if not np.allclose(P, gold["P"], rtol=RTOL, atol=ATOL):
         print("Wrong transition probabilities")
         passed = False
-         # DEBUG: find all entries that differ beyond the tolerance and report them
-        diff_mask = ~np.isclose(P, g_P, rtol=RTOL, atol=ATOL)
-        same_mask = np.isclose(P, g_P, rtol=RTOL, atol=ATOL)
-        diff_indices = np.argwhere(diff_mask)
-        same_indices = np.argwhere(same_mask)
-        n_diff = diff_indices.shape[0]
-        n_same = same_indices.shape[0]
-        print(f"Found {n_diff} differing (i,j,u) entries between P and golden g_P.")
-        print(f"Found {n_same} same (i,j,u) entries between P and golden g_P.")
-        for idx in diff_indices:
-            i, j, u = idx.tolist()
-            pval = float(P[i, j, u])
-            gval = float(g_P[i, j, u])
-            print(f"P[{i},{j},{u}] = {pval:.12g}, g_P = {gval:.12g}")
-        passed = False
-        global_state = 9
-        print(f"prob g: {g_P[global_state,:,0]}")
-        print(f"prob p: {P[global_state,:,0]}")
     else:
         print("Correct transition probabilities")
 
@@ -130,6 +112,14 @@ def run_test(test_nr: int) -> None:
     if "u" in gold.files:
         if not np.array_equal(u_opt, gold["u"]):
             print("Policy differs from golden (may be OK if ties exist)")
+            diff_mask = ~np.isclose(u_opt, gold["u"], rtol=RTOL, atol=ATOL)
+            diff_indices = np.argwhere(diff_mask)
+            n_diff = diff_indices.shape[0]
+            print(f"Found {n_diff} differing (i) entries between u_opt and golden u.")
+            for idx in diff_indices:
+                Jval = float(u_opt[idx])
+                gval = float(gold["u"][idx])
+                print(f"J[{idx}] = {Jval:}, g_J = {gval:}")
         else:
             print("Policy matches golden")
 
