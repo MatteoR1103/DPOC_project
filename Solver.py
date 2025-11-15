@@ -181,7 +181,6 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     # and the key can be computed by (s*stride), the map returns the state corresponding to s (can be retrieved thanks to encoded that computes for every valid state)  
     state_index_map[encoded] = np.arange(C.K)
     
-
     # TODO fill the transition probability matrix P here
     w_h_dim = len(C.S_h)
     #The transition probability first computes the dynamics considering the disturbances, and then assigns probabilities based on the
@@ -247,7 +246,6 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
    
     current_states = valid_indices
     for u in range(C.L):
-        #start_loop = time.time()
         all_cstates = []
         all_nstates = []
         all_probs = []
@@ -257,8 +255,6 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
                     tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0] + C.V_max, d_k1_int[:, :, 0], h_k1_int[:, :, 0, 0]))
                     encoded_next = (tuples * stride).sum(axis=1)
                     indices = state_index_map[encoded_next]
-                    #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32) #(K_valid, )
-
                     all_cstates.append(current_states)
                     all_nstates.append(indices)
                     all_probs.append(1-p_spawn)#deterministic update for velocities for no flap or weak flap, only stochastic thing is no_spawn 
@@ -268,7 +264,6 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
                         tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0] + C.V_max, d_k1_int[:, :, 1], h_k1_int[:, :, h, 1]))
                         encoded_next = (tuples * stride).sum(axis=1)
                         indices = state_index_map[encoded_next]
-                        #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32)
                         all_cstates.append(current_states)
                         all_nstates.append(indices)
                         all_probs.append((1/w_h_dim)*(p_spawn))
@@ -280,7 +275,6 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
                         tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v] + C.V_max, d_k1_int[:, :, 0], h_k1_int[:, :, 0, 0]))
                         encoded_next = (tuples * stride).sum(axis=1)
                         indices = state_index_map[encoded_next]
-                        #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32)
                         all_cstates.append(current_states)
                         all_nstates.append(indices)
                         all_probs.append((1/flap_space_dim)*(1-p_spawn))
@@ -290,12 +284,10 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
                             tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v] + C.V_max, d_k1_int[:, :, 1], h_k1_int[:, :, h, 1]))
                             encoded_next = (tuples * stride).sum(axis=1)
                             indices = state_index_map[encoded_next]
-                            #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32)
                             all_cstates.append(current_states)
                             all_nstates.append(indices)
                             all_probs.append((1/flap_space_dim)*(1/w_h_dim)*(p_spawn))
         
-
         all_cstates = np.concatenate(all_cstates)
         all_nstates = np.concatenate(all_nstates)
         all_probs = np.concatenate(all_probs)
@@ -306,25 +298,27 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     #compare_dense_sparse(P, P_sparse)
     
     J = np.zeros(K)
-    #max_iters = 1000
     tol = 1e-5
-    do = True
     count = 0
-    while do:
+    iters = 500
+    
+    while True:
         # Bellman backup: for each (i,u)
         J_new = np.empty_like(J)
         count += 1
 
+        #J = np.min([Q[:, u] + P_sparse[u].dot(J) for u in range(C.L)])
+        
         for u in range(C.L):
             J_new_u = Q[:, u] + P_sparse[u].dot(J)
             if u == 0:
                 J_new = J_new_u
             else:
                 J_new = np.minimum(J_new, J_new_u)
-
-        if np.max(np.abs(J_new - J)) < tol:
-
-            break
+        
+        if (count % iters) == 0: 
+            if np.max(np.abs(J_new - J)) < tol:
+                break
 
         J = J_new
 
@@ -334,13 +328,13 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     for u in range(C.L):
         #calculate corresponding J_Q for each input with the optimal J
         J_Q[:, u] = Q[:, u] + P_sparse[u].dot(J)
-
     
-    
-    #J_Q = Q + np.sum(P * J[None, :, None], axis=1)      # (K, L)
     u_opt_ind = np.argmin(J_Q, axis=1)
     u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
-    print(f"Count{count}")
+
+    #print(f"Count{count}")
+
+    
 
 
     return J, u_opt
