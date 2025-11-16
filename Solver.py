@@ -17,6 +17,7 @@ Institute for Dynamic Systems and Control
 """
 
 import numpy as np
+import time
 from Const import Const
 from ComputeTransitionProbabilities import *
 from ComputeExpectedStageCosts import *
@@ -92,13 +93,14 @@ def modified_policy(
     #J_opt, _ = value_iteration(C, P_sparse, Q, J_init = J_opt)
     return J_opt, u_opt
 
-
-
-
 # The idea of initializing VI using PI might still be valid, keep it in mind.
+def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init = None, tol: float = 1e-5, iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
+    if J_init is None:
+        J = np.empty((C.K, C.L)) # Normal INIT
+    else:
+        J = J_init.copy()  # Start from the provided initial guess
 
-def value_iteration(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, tol: float = 1e-5, iters: int = 50) -> tuple[np.ndarray, np.ndarray]:
-    J = np.min(Q, axis=1)
+    J_conv = J.copy()
     count = 0
     while True:
         # Bellman backup: for each (i,u)
@@ -109,16 +111,14 @@ def value_iteration(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, tol: fl
             J_new = Q[:, u] + P_sparse[u].dot(J)
             J = np.minimum(J_new, J)
         
-        if (count % iters) == iters-1: 
-            J_conv = J.copy()
-
-        if (count % iters) == 0 and count >= 1000: 
-            if np.max(np.abs(J_conv - J)) < tol:
+        if (count % iters) == 0:
+            residual = np.max(np.abs(J_conv - J))
+            
+            if residual < tol:
+                print(f"Optimized VI converged in {count} iterations.")
                 break
-
-
+            J_conv = J.copy()
     # Extract policy corresponding to final J
-    #end = time.time()
     expected_value = np.column_stack([(P_sparse[u].dot(J))for u in range(C.L)])
     J_Q = Q + expected_value
     u_opt_ind = np.argmin(J_Q, axis=1)
@@ -128,9 +128,105 @@ def value_iteration(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, tol: fl
     return (J, u_opt) 
 
 
+def value_iteration_anderson(
+    C: Const,
+    P_sparse: list[csr_matrix],
+    Q: np.ndarray,
+    J_init: np.ndarray = None,
+    tol: float = 1e-5,
+    m: int = 10,           # History size of the Js
+    reg: float = 1e-8,     # Regularization for stability, otherwise diverges
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Value Iteration with Anderson Acceleration.
+    Args:
+        C: problem constants
+        P_sparse: list of length C.L, each element is a csr_matrix of shape (K, K)
+                  with P_sparse[u][i, j] = P(i -> j | action u)
+        Q: expected stage cost, shape (K, L)
+        tol: tolerance for convergence
+        m: history size for Anderson Acceleration
+        reg: regularization parameter for stability in least-squares solve
+    """
+    K, L = C.K, C.L
+    
+    # --- Helper function for the Bellman Operator T(J) ---
+    def bellman_operator(J_in: np.ndarray) -> np.ndarray:
+        J_cands = np.empty((K, L))
+        for u in range(L):
+            J_cands[:, u] = Q[:, u] + P_sparse[u].dot(J_in)
+        return np.min(J_cands, axis=1)
+    # ---------------------------------------------------
+    if J_init is None:
+        J = np.empty((C.K, C.L)) # Initial guess
+    else:
+        J = J_init.copy()  # Start from the provided initial guess
+
+    # History buffers for AA
+    J_hist = np.zeros((m, K))  # Stores the last m J_k vectors
+    G_hist = np.zeros((m, K))  # Stores the last m g_k = T(J_k) - J_k vectors
+
+    count = 0
+    while True:
+        count += 1
+
+        # 1. Apply the Bellman operator
+        T_J = bellman_operator(J)    
+        # 2. Calculate the residual
+        g = T_J - J
+        # 3. Store in history (using a circular buffer)
+        k = (count - 1) % m
+        J_hist[k] = J
+        G_hist[k] = g
+
+        # --- Convergence Check ---
+        # We check every step (or `check_every`)
+        # We check the *true* residual max|T(J) - J|
+        residual = np.max(np.abs(g))
+        if residual < tol:
+            print(f"Anderson VI converged in {count} iterations.")
+            break
+        
+        # --- Anderson Acceleration Step ---
+        if count < m:
+            # While filling the buffer, just do a standard VI step
+            J = T_J
+        else:
+            # History is full. Solve the least-squares problem.
+            # We want to find alpha to minimize ||g_k + G_k @ alpha||^2
+            # G_k = [g_{k-1}-g_k, ..., g_{k-m}-g_k]
+            
+            G_matrix = G_hist.T  # (K, m)
+            GTG = G_matrix.T @ G_matrix   # (m, m)
+            GTg = G_matrix.T @ g          # (m,)
+            
+            # Solve (GTG + reg*I) * alpha = -GTg
+            try:
+                alpha = np.linalg.solve(GTG + reg * np.eye(m), -GTg)
+            except np.linalg.LinAlgError:
+                # if the matrix is singular, just do a standard step
+                J = T_J
+                continue
+
+            # 4. Compute the accelerated update
+            T_J_hist = J_hist + G_hist  # History of T(J_i)
+            T_J_diffs = T_J_hist - T_J  # (m, K)
+            
+            # J_next = T_J + (alpha @ T_J_diffs)
+            J = T_J + (T_J_diffs.T @ alpha)
+
+    # --- Extract Policy ---
+    expected_value = np.column_stack([(P_sparse[u].dot(J)) for u in range(C.L)])
+    J_Q = Q + expected_value
+    u_opt_ind = np.argmin(J_Q, axis=1)
+    u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
+
+    return (J, u_opt)
+
+
 def value_iteration_accelerated(C: Const, P_sparse: list[csr_matrix], Q,
                                 tol: float = 1e-5,
-                                check_every: int = 10) -> tuple[np.ndarray, np.ndarray]:
+                                check_every: int = 1) -> tuple[np.ndarray, np.ndarray]:
     """
     Your fast, action-asynchronous VI, now with Nesterov Acceleration.
     """
@@ -155,8 +251,6 @@ def value_iteration_accelerated(C: Const, P_sparse: list[csr_matrix], Q,
         
         # 2. Extrapolate J to a new point Y
         # This is the "smarter" point to start the update from.
-        if(np.isinf(J).any()):
-            raise ValueError("J contains inf")
         Y = J + momentum * (J - J_last)
         
         # 3. Save current J to be J_last for the *next* iteration
@@ -237,136 +331,215 @@ def GS_value_iteration(C: Const, P_sparse: list[csr_matrix], Q, tol: float = 1e-
 
 def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     Q = compute_expected_stage_cost(C)        # (K, L)
-    K, L = C.K, C.L
-
-    start = time.time()
     P_sparse = []
-    #PRECOMPUTATIONS: 
-    # Create the state space and build numerical encoding for later indexing 
-    input_space = C.input_space
+    # PRECOMPUTATIONS: build state-space encodings and masks
+    (
+        _,
+        state_index_map,
+        stride,
+        valid_indices,
+        y_k_valid,
+        v_k_valid,
+        d_k_valid,
+        h_k_valid,
+    ) = build_state_space(C)
+
+    # Compute dynamics (heights, velocities, obstacles, spawn probabilities)
+    (
+        y_k1_int,
+        v_k1_int,
+        d_k1_int,
+        h_k1_int,
+        p_spawn,
+    ) = build_dynamics(C, y_k_valid, v_k_valid, d_k_valid, h_k_valid)
+   
+    # Initialize J_init using one-step lookahead costs for valid states
+    J_init = np.zeros(C.K)
+    J_1_step_costs = np.min(Q, axis=1)
+    # Apply these costs *only* to the "valid" (alive) states.
+    J_init[valid_indices] = J_1_step_costs[valid_indices]
+
+    # Build sparse transition matrices (one CSR per action)
+    P_sparse = build_P_sparse(
+        C,
+        y_k1_int=y_k1_int,
+        v_k1_int=v_k1_int,
+        d_k1_int=d_k1_int,
+        h_k1_int=h_k1_int,
+        state_index_map=state_index_map,
+        stride=stride,
+        valid_indices=valid_indices,
+        p_spawn=p_spawn,
+    )
+
+    (J, u_opt) = value_iteration_in_place(C, P_sparse, Q, tol=1e-5, J_init = J_init)
+    return (J, u_opt)
+
+# HELPER FUNCTIONS BELOW
+def build_state_space(C: Const):
+    """Build state-space arrays and indexing helpers.
+
+    Returns a tuple:
+      (input_space, state_space, state_index_map, stride,
+       valid_indices, y_k_valid, v_k_valid, d_k_valid, h_k_valid)
+    """
+    # input_space = C.input_space
     state_space = np.array(C.state_space, dtype=np.int64)
 
     state_space_for_keys = state_space.copy()
-    state_space_for_keys[:, 1] += C.V_max    #offset to avoid negative indices offset 
+    state_space_for_keys[:, 1] += C.V_max
     dims = [
-            len(C.S_y),
-            len(C.S_v),
-            len(C.S_d1),
-            *([len(C.S_d)] * (C.M - 1)),
-            *([len(C.S_h)] * C.M),
-            ]
-    #dims contains the whole state space, also the INVALID STATES. But we don't care if we create an encoding also for invalid arrays, because then the map
-    #is built only out of the valid state space 
+        len(C.S_y),
+        len(C.S_v),
+        len(C.S_d1),
+        *([len(C.S_d)] * (C.M - 1)),
+        *([len(C.S_h)] * C.M),
+    ]
     stride = np.cumprod([1] + dims[:-1])
-    #the stride defines for each parameter of the tuple(y, v, d1, d2, ...., dM, h1, h2, ..., hM), how fast it varies:
-    
-    #Here we choose y to vary fastest (stride[0]=1), then v varies as soon as y runs out of dimension, so varies each len(C.S_y). Then the third object
-    # varies as soon as both run out of dimension, so each len(C.S_y)*len(C.S_v), which is what cumprod is doing
-    # To effectively encode the states in the state space we multiply each parameter for the corresponding number on the stride, and sum them up together 
+
     encoded = (state_space_for_keys * stride).sum(axis=1)
-    #Now we effectively need to create the indexing array. To do so we must remember that keys are not consecutive because of invalid states
-    #Therefore we fill the array with -1 to flag with invalid states, and the array must be at least max_key dimensional. 
-    max_key = encoded.max()
+    max_key = int(encoded.max())
     state_index_map = -np.ones(max_key + 1, dtype=np.int32)
-
-    #Fill the array with the unique encoding keys. This is an inverse array: given the key it returns the corresponding state. If state s has key k,
-    # and the key can be computed by (s*stride), the map returns the state corresponding to s (can be retrieved thanks to encoded that computes for every valid state)  
     state_index_map[encoded] = np.arange(C.K)
-    w_h_dim = len(C.S_h)
-    
-    y_k = np.array([s[0] for s in state_space]) #(K,)
-    v_k = np.array([s[1] for s in state_space]) #(K,)
 
-    d_k = np.array([s[2 : 2 + C.M] for s in state_space]) #(K,M) 
-    h_k = np.array([s[2 + C.M : ] for s in state_space])  #(K,M)
-    
+    y_k = np.array([s[0] for s in state_space])
+    v_k = np.array([s[1] for s in state_space])
+    d_k = np.array([s[2 : 2 + C.M] for s in state_space])
+    h_k = np.array([s[2 + C.M : ] for s in state_space])
+
     half = (C.G - 1) // 2
-    not_in_gap = abs(y_k - h_k[:,0]) > half
-    in_col_1 = d_k[:,0] == 0   #mask selcting where we have an obst in 1st column
-
-    is_colliding_mask = not_in_gap & in_col_1 #(K,) array of booleans indicating whether it's colliding or not
+    not_in_gap = abs(y_k - h_k[:, 0]) > half
+    in_col_1 = d_k[:, 0] == 0
+    is_colliding_mask = not_in_gap & in_col_1
     valid = np.logical_not(is_colliding_mask)
-    valid_indices = np.nonzero(valid)[0] 
+    valid_indices = np.nonzero(valid)[0]
 
     y_k_valid = y_k[valid]
     v_k_valid = v_k[valid]
-    
     d_k_valid = d_k[valid, :]
     h_k_valid = h_k[valid, :]
-    
-    # FROM NOW ON K HAS TO BE INTENDED AS THE VALID (NON-COLLIDING) STATE DIMENSION
 
-    #Next height dynamics
-    y_k1 = compute_height_dynamics(y_k = y_k_valid, v_k=v_k_valid, C=C) #(K,)
+    return (
+        #input_space,
+        state_space,
+        state_index_map,
+        stride,
+        valid_indices,
+        y_k_valid,
+        v_k_valid,
+        d_k_valid,
+        h_k_valid,
+    )
 
-    #Next vel dynamics
-    v_dev_inter = np.arange(-C.V_dev, C.V_dev + 1)
-    flap_space_dim = len(v_dev_inter)
-    v_k1 = compute_vel_dynamics(v_k_valid, input_space, v_dev_inter, C) #(K, input_space, 2*V_dev +1)
+def build_P_sparse(
+    C: Const,
+    y_k1_int: np.ndarray,
+    v_k1_int: np.ndarray,
+    d_k1_int: np.ndarray,
+    h_k1_int: np.ndarray,
+    state_index_map: np.ndarray,
+    stride: np.ndarray,
+    valid_indices: np.ndarray,
+    p_spawn: np.ndarray,
+) -> list:
+    """Build list of CSR transition matrices (one per action).
 
-    #Next obstacles' dynamics
-    d_k1, h_k1, p_spawn = compute_obst_dynamics(d_k_valid, h_k_valid, y_k_valid, C) #tuple((K,M,2), (K, M, len(S_h), 2), (K,))
-    
-
-    y_k1_int = y_k1.astype(int)
-    v_k1_int = v_k1.astype(int)
-    d_k1_int = d_k1.astype(int)
-    h_k1_int = h_k1.astype(int)
-   
+    This extracts the block that was previously inline in `solution`.
+    Returns: list of length C.L with CSR matrices shape (C.K, C.K).
+    """
+    P_sparse = []
     current_states = valid_indices
+    w_h_dim = len(C.S_h)
+    flap_space_dim = v_k1_int.shape[2]
+
     for u in range(C.L):
         all_cstates = []
         all_nstates = []
         all_probs = []
-        for i in range(2): #no spawn (i=0) / spawn (i=1)
-            if u == 0 or u == 1: # no_flap/weak_flap
-                if i == 0: #no spawn
-                    tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0] + C.V_max, d_k1_int[:, :, 0], h_k1_int[:, :, 0, 0]))
+
+        for i in range(2):  # no spawn (i=0) / spawn (i=1)
+            if u == 0 or u == 1:  # no_flap/weak_flap
+                if i == 0:  # no spawn
+                    tuples = np.column_stack((
+                        y_k1_int,
+                        v_k1_int[:, u, 0] + C.V_max,
+                        d_k1_int[:, :, 0],
+                        h_k1_int[:, :, 0, 0],
+                    ))
                     encoded_next = (tuples * stride).sum(axis=1)
                     indices = state_index_map[encoded_next]
                     all_cstates.append(current_states)
                     all_nstates.append(indices)
-                    all_probs.append(1-p_spawn)#deterministic update for velocities for no flap or weak flap, only stochastic thing is no_spawn 
-                    
-                else: #spawn 
-                    for h in range(len(C.S_h)):  
-                        tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0] + C.V_max, d_k1_int[:, :, 1], h_k1_int[:, :, h, 1]))
+                    all_probs.append(1 - p_spawn)
+                else:  # spawn
+                    for h in range(len(C.S_h)):
+                        tuples = np.column_stack((
+                            y_k1_int,
+                            v_k1_int[:, u, 0] + C.V_max,
+                            d_k1_int[:, :, 1],
+                            h_k1_int[:, :, h, 1],
+                        ))
                         encoded_next = (tuples * stride).sum(axis=1)
                         indices = state_index_map[encoded_next]
                         all_cstates.append(current_states)
                         all_nstates.append(indices)
-                        all_probs.append((1/w_h_dim)*(p_spawn))
-                              
-
-            else: #strong flap
-                if i == 0: #no spawn
+                        all_probs.append((1 / w_h_dim) * (p_spawn))
+            else:  # strong flap
+                if i == 0:  # no spawn
                     for v in range(flap_space_dim):
-                        tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v] + C.V_max, d_k1_int[:, :, 0], h_k1_int[:, :, 0, 0]))
+                        tuples = np.column_stack((
+                            y_k1_int,
+                            v_k1_int[:, u, v] + C.V_max,
+                            d_k1_int[:, :, 0],
+                            h_k1_int[:, :, 0, 0],
+                        ))
                         encoded_next = (tuples * stride).sum(axis=1)
                         indices = state_index_map[encoded_next]
                         all_cstates.append(current_states)
                         all_nstates.append(indices)
-                        all_probs.append((1/flap_space_dim)*(1-p_spawn))
-                else: #spawn 
+                        all_probs.append((1 / flap_space_dim) * (1 - p_spawn))
+                else:  # spawn
                     for v in range(flap_space_dim):
-                        for h in range(len(C.S_h)):    
-                            tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v] + C.V_max, d_k1_int[:, :, 1], h_k1_int[:, :, h, 1]))
+                        for h in range(len(C.S_h)):
+                            tuples = np.column_stack((
+                                y_k1_int,
+                                v_k1_int[:, u, v] + C.V_max,
+                                d_k1_int[:, :, 1],
+                                h_k1_int[:, :, h, 1],
+                            ))
                             encoded_next = (tuples * stride).sum(axis=1)
                             indices = state_index_map[encoded_next]
                             all_cstates.append(current_states)
                             all_nstates.append(indices)
-                            all_probs.append((1/flap_space_dim)*(1/w_h_dim)*(p_spawn))
-        
+                            all_probs.append((1 / flap_space_dim) * (1 / w_h_dim) * (p_spawn))
+
         all_cstates = np.concatenate(all_cstates)
         all_nstates = np.concatenate(all_nstates)
         all_probs = np.concatenate(all_probs)
+
         P_sparse.append(coo_matrix((all_probs, (all_cstates, all_nstates)), shape=(C.K, C.K)).tocsr())
 
-    end = time.time()
-    print(f"Time elapsed with sparse matrix construction: {end-start}")
-    #compare_dense_sparse(P, P_sparse)
-    
-    (J, u_opt) = value_iteration_accelerated(C, P_sparse, Q, tol=1e-5)#, iters=500)
-    print(f"VI time: {end-start}")
+    return P_sparse
 
-    return (J, u_opt)
+def build_dynamics(C: Const, y_k_valid: np.ndarray, v_k_valid: np.ndarray, d_k_valid: np.ndarray, h_k_valid: np.ndarray):
+        """Compute next-state dynamics and return integer arrays + spawn probs.
+
+        Returns:
+            y_k1_int, v_k1_int, d_k1_int, h_k1_int, p_spawn
+        """
+        # Next height dynamics (deterministic)
+        y_k1 = compute_height_dynamics(y_k=y_k_valid, v_k=v_k_valid, C=C)
+
+        # Next vel dynamics
+        v_dev_inter = np.arange(-C.V_dev, C.V_dev + 1)
+        v_k1 = compute_vel_dynamics(v_k_valid, C.input_space, v_dev_inter, C)
+
+        # Next obstacles' dynamics
+        d_k1, h_k1, p_spawn = compute_obst_dynamics(d_k_valid, h_k_valid, y_k_valid, C)
+
+        y_k1_int = y_k1.astype(int)
+        v_k1_int = v_k1.astype(int)
+        d_k1_int = d_k1.astype(int)
+        h_k1_int = h_k1.astype(int)
+
+        return y_k1_int, v_k1_int, d_k1_int, h_k1_int, p_spawn
