@@ -95,8 +95,10 @@ def modified_policy(
 
 
 
-def value_iteration(C: Const, P_sparse: list[csr_matrix], Q, J_init = None, tol: float = 1e-5, iters: int = 500) -> tuple[np.ndarray, np.ndarray]:
-    J = np.zeros(C.K) #if (J_init is None) else J_init
+# The idea of initializing VI using PI might still be valid, keep it in mind.
+
+def value_iteration(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, tol: float = 1e-5, iters: int = 50) -> tuple[np.ndarray, np.ndarray]:
+    J = np.min(Q, axis=1)
     count = 0
     while True:
         # Bellman backup: for each (i,u)
@@ -110,7 +112,7 @@ def value_iteration(C: Const, P_sparse: list[csr_matrix], Q, J_init = None, tol:
         if (count % iters) == iters-1: 
             J_conv = J.copy()
 
-        if (count % iters) == 0: 
+        if (count % iters) == 0 and count >= 1000: 
             if np.max(np.abs(J_conv - J)) < tol:
                 break
 
@@ -124,6 +126,69 @@ def value_iteration(C: Const, P_sparse: list[csr_matrix], Q, J_init = None, tol:
 
     print(f"Count: {count}")
     return (J, u_opt) 
+
+
+def value_iteration_accelerated(C: Const, P_sparse: list[csr_matrix], Q,
+                                tol: float = 1e-5,
+                                check_every: int = 10) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Your fast, action-asynchronous VI, now with Nesterov Acceleration.
+    """
+    K, L = C.K, C.L
+    
+    # 1. Start with a better J_init.
+    # This is a one-step lookahead cost, much better than zeros.
+    J = np.min(Q, axis=1)
+    
+    J_last = J.copy()
+    w = 1.0  # Nesterov momentum weight
+    count = 0
+    
+    while True:
+        count += 1
+        
+        # --- Nesterov Momentum Step ---
+        # 1. Calculate momentum weight
+        w_last = w
+        w = (1.0 + np.sqrt(1.0 + 4.0 * w_last**2)) / 2.0
+        momentum = (w_last - 1.0) / w
+        
+        # 2. Extrapolate J to a new point Y
+        # This is the "smarter" point to start the update from.
+        if(np.isinf(J).any()):
+            raise ValueError("J contains inf")
+        Y = J + momentum * (J - J_last)
+        
+        # 3. Save current J to be J_last for the *next* iteration
+        J_last = J.copy()
+        # -------------------------------
+
+        # --- Your fast update loop, but starting from Y ---
+        # We compute J = T(Y)
+        J_candidates = np.empty((K, L))
+        for u in range(L):
+            J_candidates[:, u] = Q[:, u] + P_sparse[u].dot(Y)
+        
+        J = np.min(J_candidates, axis=1)
+        # -------------------------------
+        
+        # --- Parametrized Convergence Check ---
+        # We check every N iterations for speed.
+        # We must check against J_last (the *true* previous J), not Y.
+        if (count % check_every) == 0:
+            residual = np.max(np.abs(J_last - J))
+            
+            if residual < tol:
+                print(f"Accelerated VI converged in {count} iterations.")
+                break
+
+    # Extract policy
+    expected_value = np.column_stack([(P_sparse[u].dot(J)) for u in range(L)])
+    J_Q = Q + expected_value
+    u_opt_ind = np.argmin(J_Q, axis=1)
+    u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
+
+    return (J, u_opt)
 
 def GS_value_iteration(C: Const, P_sparse: list[csr_matrix], Q, tol: float = 1e-5, iters: int = 500) -> tuple[np.ndarray, np.ndarray]:
     J = np.zeros(C.K)
@@ -301,7 +366,7 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     print(f"Time elapsed with sparse matrix construction: {end-start}")
     #compare_dense_sparse(P, P_sparse)
     
-    (J, u_opt) = value_iteration(C, P_sparse, Q, tol=1e-5, iters=500)
+    (J, u_opt) = value_iteration_accelerated(C, P_sparse, Q, tol=1e-5)#, iters=500)
     print(f"VI time: {end-start}")
 
     return (J, u_opt)
