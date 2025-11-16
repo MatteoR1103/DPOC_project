@@ -93,14 +93,49 @@ def modified_policy(
     #J_opt, _ = value_iteration(C, P_sparse, Q, J_init = J_opt)
     return J_opt, u_opt
 
+def value_iteration(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init = None, tol: float = 1e-5, iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
+    
+    if J_init is None:
+        J = np.zeros(C.K) # Normal INIT
+    else:
+        J = J_init.copy()  # Start from the provided initial guess
+    
+    count = 0
+    while True:
+        # Bellman backup: for each (i,u)
+        J_new = np.empty_like(J)
+        count += 1
+
+        for u in range(C.L):
+            J_new_u = Q[:, u] + P_sparse[u].dot(J)
+            if u == 0:
+                J_new = J_new_u
+            else:
+                J_new = np.minimum(J_new, J_new_u)
+
+        if (count % iters) == 0:
+            if np.max(np.abs(J_new - J)) < tol:
+                print(f"Pure VI converged in {count} iterations.")
+                break
+
+        J = J_new
+
+        # Extract policy corresponding to final J
+
+    expected_value = np.column_stack([(P_sparse[u].dot(J))for u in range(C.L)])
+    J_Q = Q + expected_value
+    u_opt_ind = np.argmin(J_Q, axis=1)
+    u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
+
+    return J, u_opt
+
 # The idea of initializing VI using PI might still be valid, keep it in mind.
 def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init = None, tol: float = 1e-5, iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
     if J_init is None:
-        J = np.empty((C.K, C.L)) # Normal INIT
+        J = np.zeros(C.K) # Normal INIT
     else:
         J = J_init.copy()  # Start from the provided initial guess
-
-    J_conv = J.copy()
+    
     count = 0
     while True:
         # Bellman backup: for each (i,u)
@@ -111,13 +146,14 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray
             J_new = Q[:, u] + P_sparse[u].dot(J)
             J = np.minimum(J_new, J)
         
+        if (count % iters) == iters-1:
+            J_conv = J.copy()
+
         if (count % iters) == 0:
-            residual = np.max(np.abs(J_conv - J))
-            
-            if residual < tol:
+            if np.max(np.abs(J_conv - J)) < tol:
                 print(f"Optimized VI converged in {count} iterations.")
                 break
-            J_conv = J.copy()
+    
     # Extract policy corresponding to final J
     expected_value = np.column_stack([(P_sparse[u].dot(J))for u in range(C.L)])
     J_Q = Q + expected_value
@@ -330,6 +366,7 @@ def GS_value_iteration(C: Const, P_sparse: list[csr_matrix], Q, tol: float = 1e-
     return J, u_opt
 
 def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
+    start = time.time()
     Q = compute_expected_stage_cost(C)        # (K, L)
     P_sparse = []
     # PRECOMPUTATIONS: build state-space encodings and masks
@@ -371,8 +408,10 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
         valid_indices=valid_indices,
         p_spawn=p_spawn,
     )
+    end = time.time()
 
-    (J, u_opt) = value_iteration_in_place(C, P_sparse, Q, tol=1e-5, J_init = J_init)
+    print(f"Time for precomps: {end-start}")
+    (J, u_opt) = value_iteration(C, P_sparse, Q, tol=1e-5, J_init = J_init)
     return (J, u_opt)
 
 # HELPER FUNCTIONS BELOW
