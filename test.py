@@ -24,7 +24,7 @@ from Const import Const
 from ComputeTransitionProbabilities import compute_transition_probabilities
 from ComputeExpectedStageCosts import compute_expected_stage_cost
 from Solver import solution
-
+import time 
 RTOL = 1e-4
 ATOL = 1e-7
 
@@ -93,7 +93,9 @@ def run_test(test_nr: int) -> None:
     else:
         print("Correct expected stage costs")
 
+    start = time.time()
     J_opt, u_opt = solution(C)
+    end = time.time()
     g_J = gold["J"]
     if not np.allclose(J_opt, gold["J"], rtol=RTOL, atol=ATOL):
         print("Wrong optimal cost")
@@ -129,6 +131,7 @@ def main() -> None:
     """Main function to run all tests."""
     n_tests = 4
     for test_nr in range(n_tests):
+
         run_test(test_nr)
     print("-----------")
 

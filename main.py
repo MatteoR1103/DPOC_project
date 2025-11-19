@@ -62,9 +62,9 @@ def main(use_solution_if_exist=True) -> None:
         
         # Solve for optimal cost and policy
         print("Solving for optimal policy ...")
-        start = time.time()
+        start = time.perf_counter()
         J_opt, u_opt = solution(C)
-        end = time.time()
+        end = time.perf_counter()
         print(f"Solution obtained in {end-start}.")
         print("J_opt (min/max):", float(np.min(J_opt)), float(np.max(J_opt)))
 

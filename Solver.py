@@ -21,7 +21,8 @@ import time
 from Const import Const
 from ComputeTransitionProbabilities import *
 from ComputeExpectedStageCosts import *
-from scipy.sparse import csr_matrix, coo_matrix
+from scipy.sparse import csr_matrix, coo_matrix, eye, vstack
+from scipy.sparse.linalg import spsolve
 
 def modified_policy(
     C: Const,
@@ -93,6 +94,46 @@ def modified_policy(
     #J_opt, _ = value_iteration(C, P_sparse, Q, J_init = J_opt)
     return J_opt, u_opt
 
+def exact_policy(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init = None, tol: float = 1e-5, max_iters: int = 100) -> tuple[np.ndarray, np.ndarray]:
+    K, L = C.K, C.L
+    
+    # Start with proper policy ("no flap" everywhere)
+    policy = np.zeros(K, dtype=int)
+    J = np.zeros(K)
+
+    for i in range(max_iters): 
+        u = policy
+        Q_pi = Q[np.arange(K), u]                       # shape (K,)
+        P_pi = P_sparse[0] if np.all(u == 0) else None  # simple fast case first
+
+        if P_pi is None:
+            # general case: need a row-wise pick of P(i, :, policy[i]
+            cols = policy
+            # Build P_pi row-by-row:
+            # but we can assemble a matrix by stacking appropriate rows
+            P_rows = []
+            for i in range(K):
+                P_rows.append(P_sparse[cols[i]].getrow(i))
+            P_pi = vstack(P_rows)
+
+        A = eye(K, format="csr") - P_pi
+        J = spsolve(A, Q_pi)       # EXACT cost of π
+
+        J = np.asarray(J).flatten()
+
+        J_Q = np.column_stack([Q[:, u] + P_sparse[u].dot(J) for u in range(L)])
+
+        new_policy = np.argmin(J_Q, axis=1)
+        if np.all(new_policy == policy):
+            break  # policy is already optimal
+
+        policy = new_policy
+
+    u_opt = np.array([C.input_space[ind] for ind in policy])
+    
+    return J, u_opt
+    
+
 def value_iteration(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init = None, tol: float = 1e-5, iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
     
     if J_init is None:
@@ -137,13 +178,20 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray
         J = J_init.copy()  # Start from the provided initial guess
     
     count = 0
+    max_iters=20000
+    start = time.time()
+
+    q = np.array([-1, -1+C.lam_weak, -1+C.lam_strong])
+    J_new = np.empty_like(J)
+    J_conv = np.empty_like(J)
+    count = 0
     while True:
         # Bellman backup: for each (i,u)
         J_new = np.empty_like(J)
         count += 1
         
         for u in range(C.L):
-            J_new = Q[:, u] + P_sparse[u].dot(J)
+            J_new = q[u] + P_sparse[u].dot(J)
             J = np.minimum(J_new, J)
         
         if (count % iters) == iters-1:
@@ -154,6 +202,8 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray
                 print(f"Optimized VI converged in {count} iterations.")
                 break
     
+    end=time.time()
+    print(f"Time for value: {end-start}")
     # Extract policy corresponding to final J
     expected_value = np.column_stack([(P_sparse[u].dot(J))for u in range(C.L)])
     J_Q = Q + expected_value
@@ -162,7 +212,6 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray
 
     print(f"Count: {count}")
     return (J, u_opt) 
-
 
 def value_iteration_anderson(
     C: Const,
@@ -258,7 +307,6 @@ def value_iteration_anderson(
     u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
 
     return (J, u_opt)
-
 
 def value_iteration_accelerated(C: Const, P_sparse: list[csr_matrix], Q,
                                 tol: float = 1e-5,
@@ -366,7 +414,7 @@ def GS_value_iteration(C: Const, P_sparse: list[csr_matrix], Q, tol: float = 1e-
     return J, u_opt
 
 def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
-    start = time.time()
+    start = time.perf_counter()
     Q = compute_expected_stage_cost(C)        # (K, L)
     P_sparse = []
     # PRECOMPUTATIONS: build state-space encodings and masks
@@ -408,10 +456,10 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
         valid_indices=valid_indices,
         p_spawn=p_spawn,
     )
-    end = time.time()
+    end = time.perf_counter()
 
     print(f"Time for precomps: {end-start}")
-    (J, u_opt) = value_iteration(C, P_sparse, Q, tol=1e-5, J_init = J_init)
+    (J, u_opt) = value_iteration_in_place(C, P_sparse, Q, tol=1e-5, J_init = J_init)
     return (J, u_opt)
 
 # HELPER FUNCTIONS BELOW
@@ -424,22 +472,6 @@ def build_state_space(C: Const):
     """
     # input_space = C.input_space
     state_space = np.array(C.state_space, dtype=np.int64)
-
-    state_space_for_keys = state_space.copy()
-    state_space_for_keys[:, 1] += C.V_max
-    dims = [
-        len(C.S_y),
-        len(C.S_v),
-        len(C.S_d1),
-        *([len(C.S_d)] * (C.M - 1)),
-        *([len(C.S_h)] * C.M),
-    ]
-    stride = np.cumprod([1] + dims[:-1])
-
-    encoded = (state_space_for_keys * stride).sum(axis=1)
-    max_key = int(encoded.max())
-    state_index_map = -np.ones(max_key + 1, dtype=np.int32)
-    state_index_map[encoded] = np.arange(C.K)
 
     y_k = np.array([s[0] for s in state_space])
     v_k = np.array([s[1] for s in state_space])
@@ -457,6 +489,24 @@ def build_state_space(C: Const):
     v_k_valid = v_k[valid]
     d_k_valid = d_k[valid, :]
     h_k_valid = h_k[valid, :]
+    
+    state_space_for_keys = state_space.copy()
+    state_space_for_keys[:, 1] += C.V_max
+    dims = [
+        len(C.S_y),
+        len(C.S_v),
+        len(C.S_d1),
+        *([len(C.S_d)] * (C.M - 1)),
+        *([len(C.S_h)] * C.M),
+    ]
+    stride = np.cumprod([1] + dims[:-1])
+
+    encoded = (state_space_for_keys * stride).sum(axis=1)
+    max_key = int(encoded.max())
+    state_index_map = -np.ones(max_key + 1, dtype=np.int32)
+    state_index_map[encoded] = np.arange(C.K)
+
+    
 
     return (
         #input_space,
