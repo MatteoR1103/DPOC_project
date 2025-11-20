@@ -70,7 +70,7 @@ def compute_transition_probabilities(C:Const) -> np.array:
     state_index_map[encoded] = np.arange(C.K)
     
 
-    # TODO fill the transition probability matrix P here
+    # DONE fill the transition probability matrix P here
     w_h_dim = len(C.S_h)
     #The transition probability first computes the dynamics considering the disturbances, and then assigns probabilities based on the
     #reachable next states. This has to be done for all the possible states in the state space
@@ -130,7 +130,7 @@ def compute_transition_probabilities(C:Const) -> np.array:
     # - Total prob of going from one state to another is: 1 * 1/(2v_dev + 1) * (1-p_spawn) for no-spawn case
     # - sum(prob)=1! GOOD
     
-    # TODO: for each state build an array that contains all the possible next_states. For how this was built, the calculation of 
+    # DONE: for each state build an array that contains all the possible next_states. For how this was built, the calculation of 
     # probabilities is actually the same for each current state and can be done vectorially
    
     current_states = valid_indices
@@ -187,9 +187,7 @@ def compute_transition_probabilities(C:Const) -> np.array:
         all_cstates = np.concatenate(all_cstates)
         all_nstates = np.concatenate(all_nstates)
         all_probs = np.concatenate(all_probs)
-        np.add.at(P[:, :, u], (all_cstates, all_nstates), all_probs)
-    
-    
+        np.add.at(P[:, :, u], (all_cstates, all_nstates), all_probs)    
     return P
 
 

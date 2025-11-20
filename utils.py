@@ -99,7 +99,7 @@ def compute_height_dynamics(y_k, v_k, C: Const):
         np.ndarray: Array of shape (K,) containing next-state altitudes,
                     clipped to remain within [0, C.Y - 1].
     """
-    return np.clip((y_k + v_k), 0, C.Y -1).astype(int)
+    return np.clip((y_k + v_k), 0, C.Y -1)#.astype(int)
 
 def compute_vel_dynamics(v_k, input_space, v_dev_inter, C: Const):
     """
@@ -122,12 +122,12 @@ def compute_vel_dynamics(v_k, input_space, v_dev_inter, C: Const):
     g = C.g
     flap_space_dim = v_dev_inter.shape[0]
     #The next velocities are deterministic if the input is no_flap or weak: K-dimensional arrays
-    v_next_no_flap = np.clip((v_k + input_space[0] - g), -v_max, v_max).astype(int)
-    v_next_weak = np.clip((v_k + input_space[1] - g), -v_max, v_max).astype(int)
+    v_next_no_flap = np.clip((v_k + input_space[0] - g), -v_max, v_max)#.astype(int)
+    v_next_weak = np.clip((v_k + input_space[1] - g), -v_max, v_max)#.astype(int)
 
     #augment v_k and v_dev_inter for broadcasting: (Kxflap_space_dim)-dimensional arrays
     # Each velocity has the same probability of being generated
-    v_next_strong = np.clip((v_k[:, None]+ input_space[2] + v_dev_inter[None, :] - g), -v_max, v_max).astype(int)
+    v_next_strong = np.clip((v_k[:, None]+ input_space[2] + v_dev_inter[None, :] - g), -v_max, v_max)#.astype(int)
 
     K_valid = v_k.shape[0]
 
@@ -166,17 +166,17 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     half = (C.G - 1) // 2 
     h_d = C.S_h[0]
 
-    d_k_copy = d_k.copy()
-    h_k_copy = h_k.copy()
+    #d_k_copy = d_k.copy()
+    #h_k_copy = h_k.copy()
 
     in_gap = abs(y_k - h_k[:,0]) <= half
-    in_col_1 = d_k_copy[:,0] == 0   #mask selcting where we have an obst in 1st column
+    in_col_1 = d_k[:,0] == 0   #mask selcting where we have an obst in 1st column
 
     is_passing_mask = in_gap & in_col_1 #(K,) array of booleans indicating whether it's passing or not
     is_drifting_mask = np.logical_not(is_passing_mask)#(K,) array of booleans indicating whether it's drifting or not
 
     #compute dynamics for passing scenario
-    passing_obst_d = d_k_copy[is_passing_mask, :] #(is_passing, M) array
+    passing_obst_d = d_k[is_passing_mask, :] #(is_passing, M) array
     d_int_passing = np.empty((passing_obst_d.shape))
     
     d_int_passing[:, 0] = passing_obst_d[:, 1] - 1 #the distance to the first becomes the distance from first to second -1
@@ -185,22 +185,22 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
 
     #print(d_int_passing)
     
-    passing_obst_h = h_k_copy[is_passing_mask, :] #(is_passing, M) array
+    passing_obst_h = h_k[is_passing_mask, :] #(is_passing, M) array
     h_int_passing = np.empty((passing_obst_h.shape))
     
     h_int_passing[:, 0:(C.M-1)] = passing_obst_h[:, 1:] #shift indices 
     h_int_passing[:, -1] = h_d                      #dummy value waiting for spawn disturbance for the next dynamics
 
     #compute dynamics for normal drifting scenario
-    drifting_obst_d = d_k_copy[is_drifting_mask, :]
+    drifting_obst_d = d_k[is_drifting_mask, :]
     d_int_drifting = np.empty((drifting_obst_d.shape))
     
     d_int_drifting[:, 0] = drifting_obst_d[:, 0] - 1 #the distance to the first becomes the distance from first - 1
     d_int_drifting[:, 1:] = drifting_obst_d[:, 1:]   #others remain unchanged 
 
-    drifting_obst_h = h_k_copy[is_drifting_mask, :]           #(is_passing, M) array
-    h_int_drifting = np.empty((drifting_obst_h.shape))
-    h_int_drifting = drifting_obst_h.copy()              #if drifting obstacles heights remain the same
+    h_int_drifting = h_k[is_drifting_mask, :]           #(is_passing, M) array
+    #h_int_drifting = np.empty((drifting_obst_h.shape))
+    # = drifting_obst_h.copy()              #if drifting obstacles heights remain the same
 
     #put everything back together into a (K,M) array 
     d_int = np.empty((K_valid, C.M))

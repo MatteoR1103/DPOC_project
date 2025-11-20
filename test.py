@@ -24,7 +24,7 @@ from Const import Const
 from ComputeTransitionProbabilities import compute_transition_probabilities
 from ComputeExpectedStageCosts import compute_expected_stage_cost
 from Solver import solution
-
+import time 
 RTOL = 1e-4
 ATOL = 1e-7
 
@@ -70,9 +70,6 @@ def run_test(test_nr: int) -> None:
     row_sums = P.sum(axis=1)  # (K, L)
     eps = 1e-10
 
-    g_P = gold["P"]
-    print(f"G_shape:{g_P.shape} ")
-    print(f"P.shape: {P.shape}")
     if not (np.all(row_sums <= 1 + eps) and np.all(row_sums >= -eps)):
         print("[ERROR] Some probability row sums are outside [0,1].")
         passed = False
@@ -93,18 +90,22 @@ def run_test(test_nr: int) -> None:
     else:
         print("Correct expected stage costs")
 
+    start = time.time()
     J_opt, u_opt = solution(C)
-    g_J = gold["J"]
+    end = time.time()
+
+    print(f"TIME TAKEN FOR TOTAL OPTIMAL SOLUTION COMPUTATION: {end-start}")
+    # g_J = gold["J"]
     if not np.allclose(J_opt, gold["J"], rtol=RTOL, atol=ATOL):
         print("Wrong optimal cost")
-        diff_mask = ~np.isclose(J_opt, g_J, rtol=RTOL, atol=ATOL)
-        diff_indices = np.argwhere(diff_mask)
-        n_diff = diff_indices.shape[0]
-        print(f"Found {n_diff} differing (i) entries between J and golden g_J.")
-        for idx in diff_indices:
-            Jval = float(J_opt[idx])
-            gval = float(g_J[idx])
-            print(f"J[{idx}] = {Jval:.12g}, g_J = {gval:.12g}")
+        # diff_mask = ~np.isclose(J_opt, g_J, rtol=RTOL, atol=ATOL)
+        # diff_indices = np.argwhere(diff_mask)
+        # n_diff = diff_indices.shape[0]
+        # print(f"Found {n_diff} differing (i) entries between J and golden g_J.")
+        # for idx in diff_indices:
+        #     Jval = float(J_opt[idx])
+        #     gval = float(g_J[idx])
+        #     print(f"J[{idx}] = {Jval:.12g}, g_J = {gval:.12g}")
         passed = False
     else:
         print("Correct optimal cost")
@@ -112,14 +113,14 @@ def run_test(test_nr: int) -> None:
     if "u" in gold.files:
         if not np.array_equal(u_opt, gold["u"]):
             print("Policy differs from golden (may be OK if ties exist)")
-            diff_mask = ~np.isclose(u_opt, gold["u"], rtol=RTOL, atol=ATOL)
-            diff_indices = np.argwhere(diff_mask)
-            n_diff = diff_indices.shape[0]
-            print(f"Found {n_diff} differing (i) entries between u_opt and golden u.")
-            for idx in diff_indices:
-                Jval = float(u_opt[idx])
-                gval = float(gold["u"][idx])
-                print(f"J[{idx}] = {Jval:}, g_J = {gval:}")
+            # diff_mask = ~np.isclose(u_opt, gold["u"], rtol=RTOL, atol=ATOL)
+            # diff_indices = np.argwhere(diff_mask)
+            # n_diff = diff_indices.shape[0]
+            # print(f"Found {n_diff} differing (i) entries between u_opt and golden u.")
+            # for idx in diff_indices:
+            #    Jval = float(u_opt[idx])
+            #    gval = float(gold["u"][idx])
+            #    print(f"J[{idx}] = {Jval:}, g_J = {gval:}")
         else:
             print("Policy matches golden")
 
@@ -129,6 +130,7 @@ def main() -> None:
     """Main function to run all tests."""
     n_tests = 4
     for test_nr in range(n_tests):
+
         run_test(test_nr)
     print("-----------")
 

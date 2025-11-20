@@ -32,7 +32,7 @@ def compute_expected_stage_cost(C: Const) -> np.array:
     """
     Q = np.ones((C.K, C.L)) * np.inf
     
-    # TODO fill the expected stage cost Q here
+    # DONE fill the expected stage cost Q here
     Q[:, 0] = -1
     Q[:, 1] = C.lam_weak-1
     Q[:, 2] = C.lam_strong-1
