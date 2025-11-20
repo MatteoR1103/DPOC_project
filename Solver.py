@@ -21,7 +21,7 @@ import time
 from Const import Const
 from ComputeTransitionProbabilities import *
 from ComputeExpectedStageCosts import *
-from scipy.sparse import csr_matrix, coo_matrix, # eye, vstack
+from scipy.sparse import csr_matrix, coo_matrix #, eye, vstack
 
 def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     start = time.perf_counter()
