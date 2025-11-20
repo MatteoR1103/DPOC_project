@@ -22,12 +22,11 @@ from Const import Const
 from ComputeTransitionProbabilities import *
 from ComputeExpectedStageCosts import *
 from scipy.sparse import csr_matrix, coo_matrix, eye, vstack
-from scipy.sparse.linalg import spsolve
 
 def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     start = time.perf_counter()
     P_sparse = []
-    # PRECOMPUTATIONS: build state-space encodings and masks
+    # PRECOMPUTATIONS: build reduced state-space encodings and masks
     (
         _,
         encoded_to_compact,
@@ -52,7 +51,7 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
    
     q = np.array([-1, -1 + C.lam_weak, -1 + C.lam_strong])
 
-    # Build sparse transition matrices (one CSR per action)
+    # Build reduced sparse transition matrices
     P_sparse = build_P_sparse(
         C,
         y_k1_int=y_k1_int,
@@ -68,8 +67,8 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     end = time.perf_counter()
     print(f"Time for precomps: {end-start}")
 
-    # Run VI on reduced system
-    J_compact, u_opt_compact = modified_policy(C=C, P_sparse=P_sparse, q=q, K_valid=K_valid+1, tol=1e-5)
+    n_state_threshold = 3500 # threshold to switch between methods
+    J_compact, u_opt_compact = modified_policy(C=C, P_sparse=P_sparse, q=q, K_valid=K_valid+1, tol=1e-5) if C.K > n_state_threshold else value_iteration_in_place(C=C, P_sparse=P_sparse, q=q, K_valid=K_valid+1, tol=1e-5)
 
     # Expand results back to full state-space size C.K
     J_full = np.full(C.K, -1.0)
@@ -129,14 +128,9 @@ def build_state_space(C: Const):
     encoded_to_compact = np.full(max_key + 1, dummy_idx, dtype=np.int32)
     encoded_valid = encoded[valid_indices].astype(np.int64)
     encoded_to_compact[encoded_valid] = np.arange(K_valid, dtype=np.int32)
-
-    # When constructing the transition matrices we always iterate `valid_indices` in order and use
-    # `np.arange(K_valid)` for the compact row indices.
-
     compact_size = K_valid + 1
     
     return (
-        #input_space,
         state_space,
         encoded_to_compact,
         stride,
@@ -291,8 +285,6 @@ def build_P_policy(C: Const, P_sparse, policy, K_valid):
     P_pi = csr_matrix((probs, (states, next_states)), shape=(K_valid, K_valid))
     return P_pi
 
-
-# TODO change the value evaluation with the improved VI we made
 def modified_policy(
     C: Const,
     K_valid: int,
@@ -317,12 +309,9 @@ def modified_policy(
         u_opt: optimal control values (actual inputs, not indices), shape (K,)
     """
     # Initialize value function and an initial proper policy (all "no flap")
-    L = C.L
     # Determine compact state dimension 
     J = np.zeros(K_valid)
-    Q = np.empty((K_valid, L))
-    for u in range(L): 
-        Q[: , u] = q[u]
+    Q = np.tile(q, (K_valid, 1))
 
     current_policy = np.zeros(K_valid, dtype=int)  # action indices in {0, ..., L-1}
 
@@ -374,8 +363,6 @@ def modified_policy(
     
     return J, u_opt
     
-
-# The idea of initializing VI using PI might still be valid, keep it in mind.
 def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray, K_valid: int, J_init=None, tol: float = 1e-5, iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
     # Determine compact state dimension 
     #J = np.zeros(K_valid)
