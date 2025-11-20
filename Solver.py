@@ -38,6 +38,7 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
         d_k_valid,
         h_k_valid,
         compact_size,
+        K_valid,
     ) = build_state_space(C)
 
     # Compute dynamics (heights, velocities, obstacles, spawn probabilities)
@@ -51,11 +52,6 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
    
     # Build compact J_init (length = compact_size). Set dummy (invalid) to 0.
     q = np.array([-1, -1 + C.lam_weak, -1 + C.lam_strong])
-    J_1_step_costs = np.ones((C.K)) * np.min(q)
-    K_valid = valid_indices.size
-    J_init = np.zeros(compact_size)
-    J_init[:K_valid] = J_1_step_costs[valid_indices]
-    J_init[K_valid] = 0.0  # explicit: J(dummy)=0 per user's request
 
     # Build sparse transition matrices (one CSR per action)
     P_sparse = build_P_sparse(
@@ -74,7 +70,7 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     print(f"Time for precomps: {end-start}")
 
     # Run VI on reduced system
-    J_compact, u_opt_compact = value_iteration_in_place(C, P_sparse, q, J_init=J_init, tol=1e-5)
+    J_compact, u_opt_compact = value_iteration_in_place(C=C, P_sparse=P_sparse, q=q, K_valid=K_valid+1, tol=1e-5)
 
     # Expand results back to full state-space size C.K
     J_full = np.ones(C.K) * (-1.0)
@@ -151,6 +147,7 @@ def build_state_space(C: Const):
         d_k_valid,
         h_k_valid,
         compact_size,
+        K_valid,
     )
 
 def build_P_sparse(
@@ -173,7 +170,7 @@ def build_P_sparse(
     Returns: list of length C.L with CSR matrices shape (compact_size, compact_size).
     """
     P_sparse = []
-    current_states = valid_indices
+    # current_states = valid_indices
     # compact rows correspond to valid states in the same order -> 0..K_valid-1
     K_valid = valid_indices.size
     current_states_compact = np.arange(K_valid, dtype=np.int32)
@@ -277,8 +274,9 @@ def build_dynamics(C: Const, y_k_valid: np.ndarray, v_k_valid: np.ndarray, d_k_v
 # TODO change the value evaluation with the improved VI we made
 def modified_policy(
     C: Const,
+    K_valid: int,
     P_sparse: list[csr_matrix],
-    Q: np.ndarray,
+    q: np.ndarray,
     eval_iters: int = 20,   # number of times THE POLICY gets improved (threshold is ~20)
     tol: float = 1e-5,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -298,9 +296,10 @@ def modified_policy(
         u_opt: optimal control values (actual inputs, not indices), shape (K,)
     """
     # Initialize value function and an initial proper policy (all "no flap")
-    K, L = C.K, C.L
-    J = np.zeros(K)
-    current_policy = np.zeros(K, dtype=int)  # action indices in {0, ..., L-1}
+    L = C.L
+    # Determine compact state dimension 
+    J = np.zeros(K_valid)
+    current_policy = np.zeros(K_valid, dtype=int)  # action indices in {0, ..., L-1}
 
     while True:
         old_policy = current_policy.copy()  # save the old policy
@@ -318,7 +317,7 @@ def modified_policy(
                 mask = (a_idx == u)
                 if not np.any(mask):
                     continue
-                J[mask] = Q[mask, u] + PJ_list[u][mask]
+                J[mask] = q[u] + PJ_list[u][mask]
 
             # Optional early stop if evaluation converged enough (unlikely)
             if np.max(np.abs(J - J_old)) < tol:
@@ -326,9 +325,9 @@ def modified_policy(
 
         # ---------- 2) Policy improvement ----------
         # For each action u, compute Q(i,u) + sum_j P(i,j,u) * J(j)
-        Q_plus = np.empty((K, L))
+        Q_plus = np.empty((K_valid, L))
         for u in range(L):
-            Q_plus[:, u] = Q[:, u] + P_sparse[u].dot(J)
+            Q_plus[:, u] = q[u] + P_sparse[u].dot(J)
 
         current_policy = np.argmin(Q_plus, axis=1)
 
@@ -386,10 +385,11 @@ def exact_policy(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init = N
     
 def value_iteration(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init = None, tol: float = 1e-5, iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
     
-    if J_init is None:
-        J = np.zeros(C.K) # Normal INIT
-    else:
-        J = J_init.copy()  # Start from the provided initial guess
+    #if J_init is None:
+    #    J = np.zeros(C.K) # Normal INIT
+    #else:
+    #    J = J_init.copy()  # Start from the provided initial guess
+    J = np.zeros((C.K, C.L))
     
     count = 0
     while True:
@@ -421,23 +421,20 @@ def value_iteration(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init 
     return J, u_opt
 
 # The idea of initializing VI using PI might still be valid, keep it in mind.
-def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray, J_init=None, tol: float = 1e-5, iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
-    # Determine compact state dimension from P_sparse (fallback to C.K)
-    if len(P_sparse) > 0:
-        K = P_sparse[0].shape[0]
-    else:
-        K = C.K
+def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray, K_valid: int, J_init=None, tol: float = 1e-5, iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
+    # Determine compact state dimension 
+    J = np.zeros(K_valid)
 
-    if J_init is None:
-        J = np.zeros(K)
-    else:
-        J = J_init.copy()  # should be length K
+    #if J_init is None:
+    #    J = np.zeros(K)
+    #else:
+    #    J = J_init.copy()  # should be length K
 
     count = 0
     start = time.time()
 
-    J_new = np.empty(K)
-    J_conv = np.empty(K)
+    J_new = np.empty(K_valid)
+    J_conv = np.empty(K_valid)
 
     while True:
         # Bellman backup: for each (i,u)
@@ -470,8 +467,9 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray
 def value_iteration_anderson(
     C: Const,
     P_sparse: list[csr_matrix],
-    Q: np.ndarray,
-    J_init: np.ndarray = None,
+    q: np.ndarray,
+    K_valid: int,
+    # J_init: np.ndarray = None,
     tol: float = 1e-5,
     m: int = 10,           # History size of the Js
     reg: float = 1e-8,     # Regularization for stability, otherwise diverges
@@ -487,23 +485,27 @@ def value_iteration_anderson(
         m: history size for Anderson Acceleration
         reg: regularization parameter for stability in least-squares solve
     """
-    K, L = C.K, C.L
-    
+    L = C.L
+
     # --- Helper function for the Bellman Operator T(J) ---
     def bellman_operator(J_in: np.ndarray) -> np.ndarray:
-        J_cands = np.empty((K, L))
+        J_cands = np.empty((K_valid, L))
         for u in range(L):
-            J_cands[:, u] = Q[:, u] + P_sparse[u].dot(J_in)
+            J_cands[:, u] = q[u] + P_sparse[u].dot(J_in)
         return np.min(J_cands, axis=1)
     # ---------------------------------------------------
-    if J_init is None:
-        J = np.empty((C.K, C.L)) # Initial guess
-    else:
-        J = J_init.copy()  # Start from the provided initial guess
+    # J is the current estimate of the value function (vector of length K).
+    # Using a (K, L) array here causes P_sparse[u].dot(J) to return (K, L),
+    # which cannot be stored into a single column of `J_cands`.
+    J = np.zeros(K_valid)
+    #if J_init is None:
+    #    J = np.empty((C.K, C.L)) # Initial guess
+    #else:
+    #    J = J_init.copy()  # Start from the provided initial guess
 
     # History buffers for AA
-    J_hist = np.zeros((m, K))  # Stores the last m J_k vectors
-    G_hist = np.zeros((m, K))  # Stores the last m g_k = T(J_k) - J_k vectors
+    J_hist = np.zeros((m, K_valid))  # Stores the last m J_k vectors
+    G_hist = np.zeros((m, K_valid))  # Stores the last m g_k = T(J_k) - J_k vectors
 
     count = 0
     while True:
@@ -556,7 +558,7 @@ def value_iteration_anderson(
 
     # --- Extract Policy ---
     expected_value = np.column_stack([(P_sparse[u].dot(J)) for u in range(C.L)])
-    J_Q = Q + expected_value
+    J_Q = q + expected_value
     u_opt_ind = np.argmin(J_Q, axis=1)
     u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
 
