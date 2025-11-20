@@ -90,7 +90,11 @@ def run_test(test_nr: int) -> None:
     else:
         print("Correct expected stage costs")
 
+    start = time.time()
     J_opt, u_opt = solution(C)
+    end = time.time()
+
+    print(f"TIME TAKEN FOR TOTAL OPTIMAL SOLUTION COMPUTATION: {end-start}")
     # g_J = gold["J"]
     if not np.allclose(J_opt, gold["J"], rtol=RTOL, atol=ATOL):
         print("Wrong optimal cost")

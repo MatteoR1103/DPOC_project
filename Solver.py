@@ -73,7 +73,7 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
     J_compact, u_opt_compact = value_iteration_in_place(C=C, P_sparse=P_sparse, q=q, K_valid=K_valid+1, tol=1e-5)
 
     # Expand results back to full state-space size C.K
-    J_full = np.ones(C.K) * (-1.0)
+    J_full = np.full(C.K, -1.0)
     u_opt_full = np.zeros(C.K)
     # map optimal costs into J_opt_full; ignore dummy last entry
     J_full[valid_indices] = J_compact[:K_valid]
@@ -197,7 +197,7 @@ def build_P_sparse(
                     all_nstates.append(indices_compact)
                     all_probs.append(1 - p_spawn)
                 else:  # spawn
-                    for h in range(len(C.S_h)):
+                    for h in range(w_h_dim):
                         tuples = np.column_stack((
                             y_k1_int,
                             v_k1_int[:, u, 0] + C.V_max,
@@ -225,7 +225,7 @@ def build_P_sparse(
                         all_probs.append((1 / flap_space_dim) * (1 - p_spawn))
                 else:  # spawn
                     for v in range(flap_space_dim):
-                        for h in range(len(C.S_h)):
+                        for h in range(w_h_dim):
                             tuples = np.column_stack((
                                 y_k1_int,
                                 v_k1_int[:, u, v] + C.V_max,
@@ -271,13 +271,40 @@ def build_dynamics(C: Const, y_k_valid: np.ndarray, v_k_valid: np.ndarray, d_k_v
 
 #def build_sparse_J(C: Const):
 
+import numpy as np
+from scipy.sparse import csr_matrix
+
+def build_P_policy(C: Const, P_sparse, policy, K_valid):
+
+    state_list = []
+    next_state_list = []
+    prob_list = []
+    
+    for u in range(C.L):
+        rows_u = np.where(policy == u)[0]
+
+        sub = P_sparse[u][rows_u, :] 
+        sub_coo = sub.tocoo()
+
+        next_state_list.append(sub_coo.col)
+        prob_list.append(sub_coo.data)
+    
+        state_list.append(rows_u[sub_coo.row])
+
+    states = np.concatenate(state_list)
+    next_states = np.concatenate(next_state_list)
+    probs = np.concatenate(prob_list)
+    P_pi = csr_matrix((probs, (states, next_states)), shape=(K_valid, K_valid))
+    return P_pi
+
+
 # TODO change the value evaluation with the improved VI we made
 def modified_policy(
     C: Const,
     K_valid: int,
     P_sparse: list[csr_matrix],
     q: np.ndarray,
-    eval_iters: int = 20,   # number of times THE POLICY gets improved (threshold is ~20)
+    eval_iters: int = 300,   # number of times THE POLICY gets improved (threshold is ~20)
     tol: float = 1e-5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -299,50 +326,73 @@ def modified_policy(
     L = C.L
     # Determine compact state dimension 
     J = np.zeros(K_valid)
+    Q = np.empty((K_valid, L))
+    for u in range(L): 
+        Q[: , u] = q[u]
+
     current_policy = np.zeros(K_valid, dtype=int)  # action indices in {0, ..., L-1}
 
+    start_p_iter = time.time()
     while True:
         old_policy = current_policy.copy()  # save the old policy
-        a_idx = current_policy
-
-        # ---------- 1) Policy evaluation (approximate) ----------
+        #a_idx = current_policy
+        P_policy = build_P_policy(C, P_sparse=P_sparse, policy=current_policy, K_valid=K_valid)    
+        Q_pi = Q[np.arange(K_valid), current_policy] 
+        
+        #Value Improvement
         for _ in range(eval_iters):
-            J_old = J.copy()
+            #J_old = J.copy()
+            J = Q_pi + P_policy.dot(J)
+            # if np.max(np.abs(J - J_old))< tol: 
+            #     print("BROKE")
+            #     break
 
-            # Precompute P_u * J for all actions w.r.t. J_old
-            PJ_list = [P_sparse[u].dot(J_old) for u in range(L)]
 
-            # Update J only on the rows that use each action u, the others are invalid
-            for u in range(L):
-                mask = (a_idx == u)
-                if not np.any(mask):
-                    continue
-                J[mask] = q[u] + PJ_list[u][mask]
-
-            # Optional early stop if evaluation converged enough (unlikely)
-            if np.max(np.abs(J - J_old)) < tol:
-                break
-
-        # ---------- 2) Policy improvement ----------
-        # For each action u, compute Q(i,u) + sum_j P(i,j,u) * J(j)
-        Q_plus = np.empty((K_valid, L))
-        for u in range(L):
-            Q_plus[:, u] = q[u] + P_sparse[u].dot(J)
-
-        current_policy = np.argmin(Q_plus, axis=1)
+        expected_value = np.column_stack([(P_sparse[u].dot(J))for u in range(C.L)])
+        J_Q = q + expected_value
+        current_policy = np.argmin(J_Q, axis=1)
 
         # Check for policy convergence
         if np.all(current_policy == old_policy):
             break
-
+    
+    end_p_iter = time.time()
+    print(f"Policy improvement time : {end_p_iter-start_p_iter}")
     # Final optimal cost and policy
-    J_opt = Q_plus.min(axis=1)
+
+    #J_opt = Q_plus.min(axis=1)
+    
+    # start = time.time()
+    
+    # P_pi = build_P_policy(P_sparse=P_sparse, policy=current_policy, K_valid=K_valid)    
+    # Q_pi = Q[np.arange(K_valid), current_policy] 
+    
+    # end = time.time()
+    # print(f"Time: MPI BUILDING: {end-start}")
+    
+    start_iter = time.time()
+    
+    count = 0
+    check_conv_iters = 20
+    while True:
+        J_old = J.copy()
+        J = Q_pi + P_policy.dot(J_old)
+        count +=1
+        if (count % check_conv_iters) == 0:
+            if np.max(np.abs(J - J_old))< tol: 
+                break
+    
+    print(f"Iters: {_}")
+    end_iter = time.time()
+
+    print(f"Value improvement time : {end_iter-start_iter}")
+
     u_opt_ind = current_policy
     u_opt = np.array([C.input_space[idx] for idx in u_opt_ind])
-
     # J_opt improvement since we did not give it enough time
-    #J_opt, _ = value_iteration(C, P_sparse, Q, J_init = J_opt)
-    return J_opt, u_opt
+    #J_opt = value_iteration_in_place(C, P_sparse, q, K_valid=K_valid, J_init = J)
+    
+    return J, u_opt
 
 def exact_policy(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init = None, tol: float = 1e-5, max_iters: int = 100) -> tuple[np.ndarray, np.ndarray]:
     K, L = C.K, C.L
@@ -423,22 +473,21 @@ def value_iteration(C: Const, P_sparse: list[csr_matrix], Q: np.ndarray, J_init 
 # The idea of initializing VI using PI might still be valid, keep it in mind.
 def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray, K_valid: int, J_init=None, tol: float = 1e-5, iters: int = 20) -> tuple[np.ndarray, np.ndarray]:
     # Determine compact state dimension 
-    J = np.zeros(K_valid)
+    #J = np.zeros(K_valid)
 
-    #if J_init is None:
-    #    J = np.zeros(K)
-    #else:
-    #    J = J_init.copy()  # should be length K
+    if J_init is None:
+        J = np.zeros(K_valid)
+    else:
+        J = J_init.copy()  # should be length K
 
     count = 0
     start = time.time()
 
-    J_new = np.empty(K_valid)
+    J_new = np.zeros_like(J)
     J_conv = np.empty(K_valid)
 
     while True:
         # Bellman backup: for each (i,u)
-        J_new = np.empty_like(J)
         count += 1
 
         for u in range(C.L):
@@ -462,7 +511,7 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray
     u_opt_ind = np.argmin(J_Q, axis=1)
     u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
 
-    return (J, u_opt)
+    return J, u_opt
 
 def value_iteration_anderson(
     C: Const,
