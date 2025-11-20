@@ -54,11 +54,11 @@ def main(use_solution_if_exist=True) -> None:
         P = compute_transition_probabilities(C)
         #end = time.time()
         #print(f"Execution time: {end - start:.3f} seconds")
-        print(f"P shape: {P.shape}")
+        #print(f"P shape: {P.shape}")
 
         print("Computing expected stage costs Q ...")
         Q = compute_expected_stage_cost(C)
-        print(f"Q shape: {Q.shape}")
+        #print(f"Q shape: {Q.shape}")
         
         # Solve for optimal cost and policy
         print("Solving for optimal policy ...")
