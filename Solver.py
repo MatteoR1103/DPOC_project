@@ -359,7 +359,7 @@ def modified_policy(
         J_old = J.copy()
         J = Q_pi + P_policy.dot(J_old)
         count +=1
-        if (count % check_conv_iters) == 0:
+        if np.mod(count, check_conv_iters) == 0:
             if np.max(np.abs(J - J_old))< tol: 
                 break
     
@@ -424,10 +424,10 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray
             J_new = q[u] + P_sparse[u].dot(J)
             J = np.minimum(J_new, J)
 
-        if (count % iters) == iters - 1:
+        if np.mod(count, iters) == iters - 1:
             J_conv = J.copy()
 
-        if (count % iters) == 0:
+        if np.mod(count, iters) == 0:
             if np.max(np.abs(J_conv - J)) < tol:
                 #print(f"Optimized VI converged in {count} iterations.")
                 break
