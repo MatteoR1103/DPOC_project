@@ -166,9 +166,6 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     half = (C.G - 1) // 2 
     h_d = C.S_h[0]
 
-    #d_k_copy = d_k.copy()
-    #h_k_copy = h_k.copy()
-
     in_gap = abs(y_k - h_k[:,0]) <= half
     in_col_1 = d_k[:,0] == 0   #mask selcting where we have an obst in 1st column
 
@@ -183,8 +180,6 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     d_int_passing[:,1:(C.M-1)] = passing_obst_d[:, 2:] #shift indices 
     d_int_passing[:, -1] = 0                       #dummy value waiting for spawn disturbance for the next dynamics
 
-    #print(d_int_passing)
-    
     passing_obst_h = h_k[is_passing_mask, :] #(is_passing, M) array
     h_int_passing = np.empty((passing_obst_h.shape))
     
@@ -199,8 +194,6 @@ def compute_obst_dynamics(d_k, h_k, y_k, C: Const):
     d_int_drifting[:, 1:] = drifting_obst_d[:, 1:]   #others remain unchanged 
 
     h_int_drifting = h_k[is_drifting_mask, :]           #(is_passing, M) array
-    #h_int_drifting = np.empty((drifting_obst_h.shape))
-    # = drifting_obst_h.copy()              #if drifting obstacles heights remain the same
 
     #put everything back together into a (K,M) array 
     d_int = np.empty((K_valid, C.M))

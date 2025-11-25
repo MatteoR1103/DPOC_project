@@ -21,10 +21,11 @@ import time
 from Const import Const
 from ComputeTransitionProbabilities import *
 from ComputeExpectedStageCosts import *
-from scipy.sparse import csr_matrix, coo_matrix #, eye, vstack
+from scipy.sparse import csr_matrix, coo_matrix , eye, vstack
+from scipy.sparse.linalg import spsolve
 
 def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
-    start = time.perf_counter()
+    #start = time.perf_counter()
     P_sparse = []
     # PRECOMPUTATIONS: build reduced state-space encodings and masks
     (
@@ -64,12 +65,10 @@ def solution(C: Const) -> tuple[np.ndarray, np.ndarray]:
         p_spawn=p_spawn,
         compact_size=compact_size,
     )
-    end = time.perf_counter()
-    print(f"Time for precomps: {end-start}")
+    #end = time.perf_counter()
+    #print(f"Time for precomps: {end-start}")
 
-    n_state_threshold = 3500 # threshold to switch between methods
-    J_compact, u_opt_compact = modified_policy(C=C, P_sparse=P_sparse, q=q, K_valid=K_valid+1, tol=1e-5) if C.K > n_state_threshold else value_iteration_in_place(C=C, P_sparse=P_sparse, q=q, K_valid=K_valid+1, tol=1e-5)
-
+    J_compact, u_opt_compact = modified_policy(C=C, P_sparse=P_sparse, q=q, K_valid=K_valid+1) 
     # Expand results back to full state-space size C.K
     J_full = np.full(C.K, -1.0)
     u_opt_full = np.zeros(C.K)
@@ -315,7 +314,9 @@ def modified_policy(
 
     current_policy = np.zeros(K_valid, dtype=int)  # action indices in {0, ..., L-1}
 
-    start_p_iter = time.time()
+    #start_p_iter = time.time()
+    policy_imprs = 0
+    
     while True:
         old_policy = current_policy.copy()  # save the old policy
         P_policy = build_P_policy(C, P_sparse=P_sparse, policy=current_policy, K_valid=K_valid)    
@@ -323,12 +324,20 @@ def modified_policy(
         
         #Value Improvement
         for _ in range(eval_iters):
+            
             #J_old = J.copy()
             J = Q_pi + P_policy.dot(J)
             # if np.max(np.abs(J - J_old))< tol: 
             #     print("BROKE")
             #     break
+        
+        J_old = J.copy()
+        J = Q_pi + P_policy.dot(J_old)
+        if np.max(np.abs(J - J_old))< 1.5*tol: 
+            eval_iters -= 50
+            
 
+        policy_imprs +=1
 
         expected_value = np.column_stack([(P_sparse[u].dot(J))for u in range(C.L)])
         J_Q = q + expected_value
@@ -338,13 +347,13 @@ def modified_policy(
         if np.all(current_policy == old_policy):
             break
     
-    end_p_iter = time.time()
-    print(f"Policy improvement time : {end_p_iter-start_p_iter}")
-    
+    #end_p_iter = time.time()
+    #print(f"Policy improvement time : {end_p_iter-start_p_iter} with policy improvements{policy_imprs}")
+    #print(f"eval_iters: {eval_iters}")
     #DO IMPROVEMENT ON THE SETTLED POLICY
     count = 0
     check_conv_iters = 20
-    start_iter = time.time()
+    #start_iter = time.time()
 
     while True:
         J_old = J.copy()
@@ -354,12 +363,41 @@ def modified_policy(
             if np.max(np.abs(J - J_old))< tol: 
                 break
     
-    end_iter = time.time()
+    #end_iter = time.time()
 
-    print(f"Value improvement time : {end_iter-start_iter}")
+   # print(f"Value improvement time : {end_iter-start_iter}")
 
     u_opt_ind = current_policy
     u_opt = np.array([C.input_space[idx] for idx in u_opt_ind])
+    
+    return J, u_opt
+
+def exact_policy(C: Const, P_sparse: list[csr_matrix], q: np.ndarray, K_valid: int, max_iters: int = 150) -> tuple[np.ndarray, np.ndarray]:
+    L = C.L
+    Q = np.tile(q, (K_valid, 1))
+    
+    # Start with proper policy ("no flap" everywhere)
+    current_policy = np.zeros(K_valid, dtype=int)
+    J = np.zeros(K_valid)
+
+    for _ in range(max_iters): 
+        old_policy = current_policy.copy() 
+        P_policy = build_P_policy(C, P_sparse=P_sparse, policy=current_policy, K_valid=K_valid)    
+        Q_pi = Q[np.arange(K_valid), current_policy] 
+
+        A = eye(K_valid, format="csr") - P_policy
+        J = spsolve(A, Q_pi)       # EXACT cost of π
+
+        J = np.asarray(J).flatten()
+
+        J_Q = np.column_stack([Q[:, u] + P_sparse[u].dot(J) for u in range(L)])
+
+        current_policy = np.argmin(J_Q, axis=1)
+        if np.all(current_policy == old_policy):
+            break  # policy is already optimal
+
+
+    u_opt = np.array([C.input_space[ind] for ind in current_policy])
     
     return J, u_opt
     
@@ -373,7 +411,7 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray
         J = J_init.copy()  # should be length K
 
     count = 0
-    start = time.time()
+    #start = time.time()
 
     J_new = np.zeros_like(J)
     J_conv = np.empty(K_valid)
@@ -391,11 +429,11 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray
 
         if (count % iters) == 0:
             if np.max(np.abs(J_conv - J)) < tol:
-                print(f"Optimized VI converged in {count} iterations.")
+                #print(f"Optimized VI converged in {count} iterations.")
                 break
-    end = time.time()
+    #end = time.time()
 
-    print(f"Time for value: {end-start}")
+    #print(f"Time for value: {end-start}")
 
     # Extract policy corresponding to final J (compact indices)
     expected_value = np.column_stack([(P_sparse[u].dot(J)) for u in range(C.L)])
@@ -405,103 +443,4 @@ def value_iteration_in_place(C: Const, P_sparse: list[csr_matrix], q: np.ndarray
 
     return J, u_opt
 
-def value_iteration_anderson(
-    C: Const,
-    P_sparse: list[csr_matrix],
-    q: np.ndarray,
-    K_valid: int,
-    # J_init: np.ndarray = None,
-    tol: float = 1e-5,
-    m: int = 10,           # History size of the Js
-    reg: float = 1e-8,     # Regularization for stability, otherwise diverges
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Value Iteration with Anderson Acceleration.
-    Args:
-        C: problem constants
-        P_sparse: list of length C.L, each element is a csr_matrix of shape (K, K)
-                  with P_sparse[u][i, j] = P(i -> j | action u)
-        Q: expected stage cost, shape (K, L)
-        tol: tolerance for convergence
-        m: history size for Anderson Acceleration
-        reg: regularization parameter for stability in least-squares solve
-    """
-    L = C.L
-
-    # --- Helper function for the Bellman Operator T(J) ---
-    def bellman_operator(J_in: np.ndarray) -> np.ndarray:
-        J_cands = np.empty((K_valid, L))
-        for u in range(L):
-            J_cands[:, u] = q[u] + P_sparse[u].dot(J_in)
-        return np.min(J_cands, axis=1)
-    # ---------------------------------------------------
-    # J is the current estimate of the value function (vector of length K).
-    # Using a (K, L) array here causes P_sparse[u].dot(J) to return (K, L),
-    # which cannot be stored into a single column of `J_cands`.
-    J = np.zeros(K_valid)
-    #if J_init is None:
-    #    J = np.empty((C.K, C.L)) # Initial guess
-    #else:
-    #    J = J_init.copy()  # Start from the provided initial guess
-
-    # History buffers for AA
-    J_hist = np.zeros((m, K_valid))  # Stores the last m J_k vectors
-    G_hist = np.zeros((m, K_valid))  # Stores the last m g_k = T(J_k) - J_k vectors
-
-    count = 0
-    while True:
-        count += 1
-
-        # 1. Apply the Bellman operator
-        T_J = bellman_operator(J)    
-        # 2. Calculate the residual
-        g = T_J - J
-        # 3. Store in history (using a circular buffer)
-        k = (count - 1) % m
-        J_hist[k] = J
-        G_hist[k] = g
-
-        # --- Convergence Check ---
-        # We check every step (or `check_every`)
-        # We check the *true* residual max|T(J) - J|
-        residual = np.max(np.abs(g))
-        if residual < tol:
-            print(f"Anderson VI converged in {count} iterations.")
-            break
-        
-        # --- Anderson Acceleration Step ---
-        if count < m:
-            # While filling the buffer, just do a standard VI step
-            J = T_J
-        else:
-            # History is full. Solve the least-squares problem.
-            # We want to find alpha to minimize ||g_k + G_k @ alpha||^2
-            # G_k = [g_{k-1}-g_k, ..., g_{k-m}-g_k]
-            
-            G_matrix = G_hist.T  # (K, m)
-            GTG = G_matrix.T @ G_matrix   # (m, m)
-            GTg = G_matrix.T @ g          # (m,)
-            
-            # Solve (GTG + reg*I) * alpha = -GTg
-            try:
-                alpha = np.linalg.solve(GTG + reg * np.eye(m), -GTg)
-            except np.linalg.LinAlgError:
-                # if the matrix is singular, just do a standard step
-                J = T_J
-                continue
-
-            # 4. Compute the accelerated update
-            T_J_hist = J_hist + G_hist  # History of T(J_i)
-            T_J_diffs = T_J_hist - T_J  # (m, K)
-            
-            # J_next = T_J + (alpha @ T_J_diffs)
-            J = T_J + (T_J_diffs.T @ alpha)
-
-    # --- Extract Policy ---
-    expected_value = np.column_stack([(P_sparse[u].dot(J)) for u in range(C.L)])
-    J_Q = q + expected_value
-    u_opt_ind = np.argmin(J_Q, axis=1)
-    u_opt = np.array([C.input_space[ind] for ind in u_opt_ind])
-
-    return (J, u_opt)
 

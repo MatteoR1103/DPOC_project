@@ -20,7 +20,6 @@ from Const import Const
 #import itertools
 from utils import *
 #import time 
-from scipy.sparse import coo_matrix
 
 def compute_transition_probabilities(C:Const) -> np.array:
     """Computes the transition probability matrix P.
@@ -145,7 +144,6 @@ def compute_transition_probabilities(C:Const) -> np.array:
                     tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0] + C.V_max, d_k1_int[:, :, 0], h_k1_int[:, :, 0, 0]))
                     encoded_next = (tuples * stride).sum(axis=1)
                     indices = state_index_map[encoded_next]
-                    #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32) #(K_valid, )
 
                     all_cstates.append(current_states)
                     all_nstates.append(indices)
@@ -156,7 +154,6 @@ def compute_transition_probabilities(C:Const) -> np.array:
                         tuples = np.column_stack((y_k1_int, v_k1_int[:, u, 0] + C.V_max, d_k1_int[:, :, 1], h_k1_int[:, :, h, 1]))
                         encoded_next = (tuples * stride).sum(axis=1)
                         indices = state_index_map[encoded_next]
-                        #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32)
                         all_cstates.append(current_states)
                         all_nstates.append(indices)
                         all_probs.append((1/w_h_dim)*(p_spawn))
@@ -168,7 +165,6 @@ def compute_transition_probabilities(C:Const) -> np.array:
                         tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v] + C.V_max, d_k1_int[:, :, 0], h_k1_int[:, :, 0, 0]))
                         encoded_next = (tuples * stride).sum(axis=1)
                         indices = state_index_map[encoded_next]
-                        #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32)
                         all_cstates.append(current_states)
                         all_nstates.append(indices)
                         all_probs.append((1/flap_space_dim)*(1-p_spawn))
@@ -178,7 +174,6 @@ def compute_transition_probabilities(C:Const) -> np.array:
                             tuples = np.column_stack((y_k1_int, v_k1_int[:, u, v] + C.V_max, d_k1_int[:, :, 1], h_k1_int[:, :, h, 1]))
                             encoded_next = (tuples * stride).sum(axis=1)
                             indices = state_index_map[encoded_next]
-                            #indices = np.array([index_map[tuple(row)] for row in tuples], dtype=np.int32)
                             all_cstates.append(current_states)
                             all_nstates.append(indices)
                             all_probs.append((1/flap_space_dim)*(1/w_h_dim)*(p_spawn))
